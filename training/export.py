@@ -50,11 +50,59 @@ def export_weights(cfg):
   print('Output:', output_filename)
   print()
 
+  name_map = {
+    'encoder.conv0.0': 'enc_conv0',
+    'encoder.conv0.1': 'enc_conv1',
+    'encoder.conv1': 'enc_conv2',
+    'encoder.conv2': 'enc_conv3',
+    'encoder.conv3': 'enc_conv4',
+    'encoder.conv4': 'enc_conv5a',
+
+    'decoder.conv5': 'enc_conv5b',
+    'decoder.conv4.0': 'dec_conv4a',
+    'decoder.conv4.1': 'dec_conv4b',
+    'decoder.conv3.0': 'dec_conv3a',
+    'decoder.conv3.1': 'dec_conv3b',
+    'decoder.conv2.0': 'dec_conv2a',
+    'decoder.conv2.1': 'dec_conv2b',
+    'decoder.conv1.0': 'dec_conv1a',
+    'decoder.conv1.1': 'dec_conv1b',
+    'decoder.conv0': 'dec_conv0',
+
+    'color_decoder.conv5': 'enc_conv5b',
+    'color_decoder.conv4.0': 'dec_conv4a',
+    'color_decoder.conv4.1': 'dec_conv4b',
+    'color_decoder.conv3.0': 'dec_conv3a',
+    'color_decoder.conv3.1': 'dec_conv3b',
+    'color_decoder.conv2.0': 'dec_conv2a',
+    'color_decoder.conv2.1': 'dec_conv2b',
+    'color_decoder.conv1.0': 'dec_conv1a',
+    'color_decoder.conv1.1': 'dec_conv1b',
+    'color_decoder.conv0': 'dec_conv0',
+
+    'error_decoder.conv5': 'err_conv5b',
+    'error_decoder.conv4.0': 'err_conv4a',
+    'error_decoder.conv4.1': 'err_conv4b',
+    'error_decoder.conv3.0': 'err_conv3a',
+    'error_decoder.conv3.1': 'err_conv3b',
+    'error_decoder.conv2.0': 'err_conv2a',
+    'error_decoder.conv2.1': 'err_conv2b',
+    'error_decoder.conv1.0': 'err_conv1a',
+    'error_decoder.conv1.1': 'err_conv1b',
+    'error_decoder.conv0': 'err_conv0',
+  }
+
   with tza.Writer(output_filename) as output_file:
     for name, value in model_state.items():
       # Export in FP16 if the model was trained with mixed precision
       tensor = value.half() if result_cfg.precision == "mixed" else value
       tensor = tensor.cpu().numpy()
+      for old, new in name_map.items():
+        if name.startswith(old):
+          name = new + name[len(old):]
+          break
+      else:
+        assert False
       print(name, tensor.shape)
 
       if name.endswith('.weight') and len(value.shape) == 4:
