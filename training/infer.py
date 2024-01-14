@@ -33,7 +33,10 @@ class Infer(object):
     self.aux_features = get_aux_features(self.features)
     self.all_channels = get_dataset_channels(self.features)
     self.num_main_channels = len(get_dataset_channels(self.main_feature))
+    self.target_features = [self.main_feature]
 
+    if cfg.budgets:
+      self.target_features.append('var')
     if VAR_PROP:
       self.features = self.features + ['var']
 
@@ -62,16 +65,7 @@ class Infer(object):
           error(f'result {aux_result} does not correspond to an auxiliary feature')
         self.aux_infers[aux_infer.main_feature] = aux_infer
 
-  # Inference function
-  def __call__(self, input, exposure=1., spp=1, **_):
-    image = input.clone()
-
-    shape = image.shape
-    pad = lambda i: F.pad(i, (0, round_up(shape[3], self.driver.model.alignment) - shape[3],
-                              0, round_up(shape[2], self.driver.model.alignment) - shape[2]))
-    unpad = lambda i: i[:, :, :shape[2], :shape[3]]
-
-    image = pad(image)
+  def apply(self, image, target, exposure, spp):
     color = image[:, 0:3, ...] * exposure
     features = image[:, 6:12, ...] if VAR_PROP else image[:, 3:9, ...]
     variance = image[:, 3:6, ...] * exposure * exposure / spp if VAR_PROP else None
@@ -94,8 +88,24 @@ class Infer(object):
       color = torch.cat([self.driver.compute_infer(torch.cat((image[:, i:i+3, ...], image[:, 9:, ...]), 1)) for i in [0, 3, 6]], 1)
       extra = None
     else:
-      color, error = self.driver.compute_infer(image, variance=variance, spp_pass=sampleMap)
+      color, error, nextSampleMap = self.driver.compute_infer(image, variance=variance, spp_pass=sampleMap)
       extra = torch.zeros_like(color[:,0:1,...]) if error is None else error
+
+    return color, extra
+
+  # Inference function
+  def __call__(self, input, exposure=1., spp=1, target=None, **_):
+    image = input.clone()
+
+    shape = image.shape
+    pad = lambda i: F.pad(i, (0, round_up(shape[3], self.driver.model.alignment) - shape[3],
+                              0, round_up(shape[2], self.driver.model.alignment) - shape[2]))
+    unpad = lambda i: i[:, :, :shape[2], :shape[3]]
+
+    image = pad(image)
+    target = None if target is None else pad(target)
+
+    color, extra = self.apply(image, target, exposure, spp)
 
     # Unpad the output
     color = unpad(color).float()
@@ -105,6 +115,47 @@ class Infer(object):
     color = torch.clamp(color, min=0.) / exposure
     return torch.cat((color, torch.ones_like(extra), extra), dim=1)
 
+
+def isclose(a, b):
+  return (a - b) / (a + b) < 1e-5
+
+
+class AdaptiveInfer(Infer):
+  def __init__(self, cfg, device, result=None):
+    super().__init__(cfg, device, result=result)
+    self.budgets = cfg.budgets
+    self.prefilter = prepare_image_prefilter(device, UNetDenoiser, 'prefilter.tza')
+
+  def apply(self, image, target, exposure, spp):
+    currentColor = image[:, 0:3, ...] * exposure
+    variance = image[:, 3:6, ...] * exposure * exposure if VAR_PROP else None
+    features = image[:, 6:12, ...] if VAR_PROP else image[:, 3:9, ...]
+    currentImage = concat(currentColor, features)
+    currentSampleMap = torch.ones_like(currentImage[:, 0:1, ...]) * spp
+
+    targetColor = target[:, 0:3, ...] * exposure
+    targetRelStdDev = torch.sqrt(target[:, 3:6, ...]) / torch.clamp(target[:, 0:3, ...], 1e-3 / exposure)
+    targetRelStdDev = self.prefilter(currentImage, targetRelStdDev)
+
+    for budget in self.budgets:
+      currentVariance = variance / currentSampleMap if VAR_PROP else None
+      _, _, nextSampleMap = self.driver.compute_infer(currentImage, variance=currentVariance, spp_pass=currentSampleMap, rel_budget=budget)
+
+      assert nextSampleMap is not None
+      assert isclose(nextSampleMap.mean().item(), budget * currentSampleMap.mean().item())  # Ensure no accidental cheating
+      torch.ceil(nextSampleMap, out=nextSampleMap)
+
+      currentColor = FakeRenderer.apply(targetColor, targetRelStdDev, currentColor, currentSampleMap, nextSampleMap, 1.0)
+      currentSampleMap += nextSampleMap
+      currentImage = concat(currentColor, currentImage[:, 3:9, ...])
+    # Final denoising
+    currentVariance = variance / currentSampleMap if VAR_PROP else None
+    color, error, _ = self.driver.compute_infer(currentImage, variance=currentVariance, spp_pass=currentSampleMap)
+
+    extra = torch.zeros_like(color[:,0:1,...]) if error is None else error
+
+    return color, extra
+
 def main():
   # Parse the command line arguments
   cfg = parse_args(description='Performs inference on a dataset using the specified training result.')
@@ -113,7 +164,7 @@ def main():
   device = init_device(cfg)
 
   # Initialize the inference function
-  infer = Infer(cfg, device)
+  infer = AdaptiveInfer(cfg, device) if cfg.budgets else Infer(cfg, device)
   print('Result:', cfg.result)
   print('Epoch:', infer.epoch)
 
@@ -165,9 +216,9 @@ def main():
 
       # Load the target image if it exists
       if target_name:
-        target = load_image_features(os.path.join(data_dir, target_name), infer.main_feature)
+        target = load_image_features(os.path.join(data_dir, target_name), infer.target_features)
         target = image_to_tensor(target, batch=True).to(device)
-        target_srgb = transform_feature(target, infer.main_feature, 'srgb', tonemap_exposure)
+        target_srgb = transform_feature(target[:, 0:3, ...], infer.main_feature, 'srgb', tonemap_exposure)
 
       # Iterate over the input images
       for input_name in input_names:
@@ -186,11 +237,11 @@ def main():
         if TIMING:
           if first:
             # Dry run to initialize CUDA
-            infer(input.clone(), exposure, spp=spp)
+            infer(input.clone(), exposure, spp=spp, target=target)
             first = False
           torch.cuda.synchronize()
           start_time = time.time()
-        output = infer(input, exposure, spp=spp)
+        output = infer(input, exposure, spp=spp, target=target)
         if TIMING:
           torch.cuda.synchronize()
           metric_str = f'time={time.time() - start_time:.4f}' if TIMING else ''

@@ -149,6 +149,8 @@ def parse_args(cmd=None, description=None):
                         help='output image formats')
     parser.add_argument('--save_all', action='store_true',
                         help='save input and target images too')
+    parser.add_argument('--budgets', '-b', type=float, nargs='*',
+                        help='relative sample budgets to allocate in adaptive iterations')
 
   if cmd in {'export'}:
     parser.add_argument('target', type=str, nargs='?',

@@ -622,6 +622,21 @@ class UNetBothPredictor(nn.Module):
 
 
 
+def blurSampleMap(sampleMap):
+  return F.avg_pool2d(sampleMap, (3, 3), stride=1, padding=1)
+
+def sampleMapFromError(rel_budget, spp_pass, error):
+  if rel_budget and spp_pass is not None:
+    nextSampleMap = blurSampleMap(torch.square(error) / spp_pass)
+
+    # Normalize mean to match rel_budget*spp_pass
+    nextSampleMean = rel_budget * spp_pass.mean((2, 3), keepdim=True)
+    return nextSampleMap * (nextSampleMean / nextSampleMap.mean((2, 3), keepdim=True))
+  else:
+    return None
+
+
+
 
 class E2EDriver:
   def __init__(self, cfg, device):
@@ -680,7 +695,7 @@ class E2EDriver:
       assert input.shape[1] == 9
       input = concat(input, torch.log2(spp_pass))
     color, sampleMap = self.model.infer(input, relBudget=rel_budget)
-    return self.tonemapInverse(color), None
+    return self.tonemapInverse(color), None, blurSampleMap(sampleMap)
 
 
 class BothDriver:
@@ -734,7 +749,7 @@ class BothDriver:
       assert input.shape[1] == 9
       input = concat(input, torch.log2(spp_pass))
     color, error, sampleMap = self.model.infer(input, relBudget=rel_budget)
-    return self.tonemapInverse(color), error
+    return self.tonemapInverse(color), error, blurSampleMap(sampleMap)
 
 
 class ErrPredDriver:
@@ -769,9 +784,9 @@ class ErrPredDriver:
     loss = color_loss + 1e-2 * err_loss
     return loss, {'loss': loss, 'color_loss': color_loss, 'error_loss': err_loss}
 
-  def compute_infer(self, input, **_):
+  def compute_infer(self, input, spp_pass=None, rel_budget=None, **_):
     color, error = self.model(input)
-    return self.tonemapInverse(color), error
+    return self.tonemapInverse(color), error, sampleMapFromError(rel_budget, spp_pass, error)
 
 
 class DenoiseDriver:
@@ -806,9 +821,15 @@ class DenoiseDriver:
 
     return loss, {'loss': loss, 'color_loss': loss}
 
-  def compute_infer(self, input, **_):
+  def compute_infer(self, input, variance=None, spp_pass=None, rel_budget=None, **_):
     output = self.model(input)
-    return self.tonemapInverse(output), None
+    if True:
+      # Uniform sampling
+      nextSampleMap = spp_pass * rel_budget if (rel_budget and spp_pass is not None) else None
+    else:
+      # Variance-based sampling
+      nextSampleMap = sampleMapFromError(rel_budget, spp_pass, channel_mean(torch.sqrt(variance)))
+    return self.tonemapInverse(output), None, nextSampleMap
 
 
 class DenoiseDriverKPCNVar:
@@ -830,12 +851,12 @@ class DenoiseDriverKPCNVar:
   def compute_losses(self, input, target, **_):
     raise NotImplementedError
 
-  def compute_infer(self, input, variance=None, **_):
+  def compute_infer(self, input, variance=None, spp_pass=None, rel_budget=None, **_):
     output, outVariance = self.model(input, variance=variance)
     stddev = torch.sqrt(outVariance)
     _, stddev = tonemap_transfer(self.tonemap, output, stddev)
     stddev = channel_mean(stddev)
-    return self.tonemapInverse(output), stddev
+    return self.tonemapInverse(output), stddev, sampleMapFromError(rel_budget, spp_pass, stddev)
 
 
 class DenoiseDriverJVP:
@@ -854,7 +875,7 @@ class DenoiseDriverJVP:
   def compute_losses(self, **_):
     raise NotImplementedError
 
-  def compute_infer(self, input, variance, **_):
+  def compute_infer(self, input, variance, spp_pass=None, rel_budget=None, **_):
     stddev = torch.sqrt(variance)
 
     # Crude tonemapping propagation, should use derivative
@@ -876,7 +897,7 @@ class DenoiseDriverJVP:
     jvps = torch.unsqueeze(color, 0) - outputs[b:, ...].view(ConvLayerJ.N, b, outputs.shape[1], outputs.shape[2], outputs.shape[3])
     stddev = channel_mean(torch.sqrt(torch.mean(torch.square_(jvps), 0)))
 
-    return self.tonemapInverse(color), stddev
+    return self.tonemapInverse(color), stddev, sampleMapFromError(rel_budget, spp_pass, stddev)
 
 
 class DenoiseDriverNaiveJVP:
@@ -895,7 +916,7 @@ class DenoiseDriverNaiveJVP:
   def compute_losses(self, **_):
     raise NotImplementedError
 
-  def compute_infer(self, input, variance, **_):
+  def compute_infer(self, input, variance, spp_pass=None, rel_budget=None, **_):
     stddev = torch.sqrt(variance)
 
     # Crude tonemapping propagation, should use derivative
@@ -911,4 +932,4 @@ class DenoiseDriverNaiveJVP:
     color = relu(output)
     stddev = channel_mean(torch.abs_(jvp))
 
-    return self.tonemapInverse(color), stddev
+    return self.tonemapInverse(color), stddev, sampleMapFromError(rel_budget, spp_pass, stddev)
