@@ -203,7 +203,7 @@ def main():
         output_suffix = cfg.result if cfg.output_suffix is None else cfg.output_suffix
         output_name = input_name + '.' + output_suffix
         if cfg.num_epochs:
-          output_name += f'_{epoch}'
+          output_name += f'_{infer.epoch}'
         if cfg.save_all:
           save_images(os.path.join(output_dir, input_name), input, input_srgb)
         save_images(os.path.join(output_dir, output_name), output, output_srgb)
