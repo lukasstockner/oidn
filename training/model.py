@@ -42,8 +42,34 @@ class ConvLayer(nn.Conv2d):
   def forward(self, input):
     return relu(super().forward(input))
 
+# 3x3 batch normalization convolution module
+class BNConvLayer(nn.Conv2d):
+  def __init__(self, in_channels, out_channels):
+    super().__init__(in_channels, out_channels, 3, padding=1)
+    self.bn = nn.BatchNorm2d(out_channels)
+
+  def forward(self, input):
+    return self.bn(relu(super().forward(input)))
+
+# 3x3 residual convolution module with BN
+class ResBlock(nn.Module):
+  def __init__(self, *counts):
+    super().__init__()
+    self.adaption = nn.Conv2d(counts[0], counts[-1], 1) if (counts[0] != counts[-1]) else nn.Identity()
+    layers = []
+    for i in range(len(counts)-1):
+      layers.append(nn.BatchNorm2d(counts[i]))
+      layers.append(nn.ReLU(inplace=True))
+      layers.append(nn.Conv2d(counts[i], counts[i+1], 3, padding=1))
+    self.residual = nn.Sequential(*layers)
+
+  def forward(self, input):
+    return self.adaption(input) + self.residual(input)
+
 def Conv(*args, layer=ConvLayer):
-  if len(args) == 2:
+  if layer == ResBlock:
+    return ResBlock(*args)
+  elif len(args) == 2:
     return layer(args[0], args[1])
   else:
     return nn.Sequential(*list(layer(args[i], args[i+1]) for i in range(0, len(args)-1)))
@@ -62,15 +88,16 @@ dc1a = 64
 dc1b = 32
 
 class UNetEncoder(nn.Module):
-  def __init__(self, in_channels):
+  def __init__(self, in_channels, layer=ConvLayer):
     super().__init__()
 
     # Convolutions
-    self.conv0 = Conv(in_channels, ec1, ec1)
-    self.conv1 = Conv(ec1, ec2)
-    self.conv2 = Conv(ec2, ec3)
-    self.conv3 = Conv(ec3, ec4)
-    self.conv4 = Conv(ec4, ec5)
+    C = lambda *x: Conv(*x, layer=layer)
+    self.conv0 = C(in_channels, ec1, ec1)
+    self.conv1 = C(ec1, ec2)
+    self.conv2 = C(ec2, ec3)
+    self.conv3 = C(ec3, ec4)
+    self.conv4 = C(ec4, ec5)
 
     # Images must be padded to multiples of the alignment
     self.alignment = 16
@@ -89,16 +116,18 @@ class UNetEncoder(nn.Module):
     return x, pool3, pool2, pool1, input
 
 class UNetDecoder(nn.Module):
-  def __init__(self, in_channels, out_channels):
+  def __init__(self, in_channels, out_channels, layer=ConvLayer):
     super().__init__()
 
     # Convolutions
-    C = lambda *x: Conv(*x, layer=ConvLayer)
+    C = lambda *x: Conv(*x, layer=layer)
+    # Don't use residual or BN for last decoder stage, it might shift color values
+    C_last = lambda *x: Conv(*x, layer=ConvLayer)
     self.conv5 = C(ec5, ec5)
     self.conv4 = C(ec5+ec3, dc4, dc4)
     self.conv3 = C(dc4+ec2, dc3, dc3)
     self.conv2 = C(dc3+ec1, dc2, dc2)
-    self.conv1 = C(dc2+in_channels, dc1a, dc1b)
+    self.conv1 = C_last(dc2+in_channels, dc1a, dc1b)
     # No ReLU after last layer
     self.conv0 = nn.Conv2d(dc1b, out_channels, 3, padding=1)
 
@@ -161,6 +190,10 @@ class DenoiseDriver:
     self.tonemapInverse = lambda c: transfer.inverse(torch.clamp(c, min=1e-6, max=1.0-1e-6))
     if cfg.model == 'unet':
       self.model = UNetDenoiser(self.tonemap, num_input_channels)
+    elif cfg.model == 'resunet':
+      self.model = UNetDenoiser(self.tonemap, num_input_channels, layer=ResBlock)
+    elif cfg.model == 'bnunet':
+      self.model = UNetDenoiser(self.tonemap, num_input_channels, layer=BNConvLayer)
     else:
       assert False
     self.model.to(device)
