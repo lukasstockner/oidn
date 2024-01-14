@@ -12,7 +12,10 @@ from loss import *
 from result import *
 
 def get_driver(cfg, device):
-  return DenoiseDriver(cfg, device)
+  if cfg.model == 'errpredunet':
+    return ErrPredDriver(cfg, device)
+  else:
+    return DenoiseDriver(cfg, device)
 
 ## -----------------------------------------------------------------------------
 ## Network layers
@@ -116,20 +119,20 @@ class UNetEncoder(nn.Module):
     return x, pool3, pool2, pool1, input
 
 class UNetDecoder(nn.Module):
-  def __init__(self, in_channels, out_channels, layer=ConvLayer):
+  def __init__(self, in_channels, out_channels, scale=1, layer=ConvLayer):
     super().__init__()
 
     # Convolutions
     C = lambda *x: Conv(*x, layer=layer)
     # Don't use residual or BN for last decoder stage, it might shift color values
     C_last = lambda *x: Conv(*x, layer=ConvLayer)
-    self.conv5 = C(ec5, ec5)
-    self.conv4 = C(ec5+ec3, dc4, dc4)
-    self.conv3 = C(dc4+ec2, dc3, dc3)
-    self.conv2 = C(dc3+ec1, dc2, dc2)
-    self.conv1 = C_last(dc2+in_channels, dc1a, dc1b)
+    self.conv5 = C(ec5, ec5//scale)
+    self.conv4 = C(ec5//scale+ec3, dc4//scale, dc4//scale)
+    self.conv3 = C(dc4//scale+ec2, dc3//scale, dc3//scale)
+    self.conv2 = C(dc3//scale+ec1, dc2//scale, dc2//scale)
+    self.conv1 = C_last(dc2//scale+in_channels, dc1a//scale, dc1b//scale)
     # No ReLU after last layer
-    self.conv0 = nn.Conv2d(dc1b, out_channels, 3, padding=1)
+    self.conv0 = nn.Conv2d(dc1b//scale, out_channels, 3, padding=1)
 
   def forward(self, data):
     x, pool3, pool2, pool1, input = data
@@ -179,6 +182,63 @@ class UNetDenoiser(nn.Module):
 
 
 
+class UNetErrorPredictor(nn.Module):
+  def __init__(self, tonemap, in_channels=3, out_channels=3):
+    super().__init__()
+    self.tonemap = tonemap
+
+    self.encoder = UNetEncoder(in_channels)
+    self.color_decoder = UNetDecoder(in_channels, out_channels)
+    self.error_decoder = UNetDecoder(in_channels, 1, scale=2)
+
+    self.alignment = self.encoder.alignment
+
+  def forward(self, input):
+    x = concat(self.tonemap(input[:, 0:3, ...]), input[:, 3:, ...])
+    x = self.encoder(x)
+    cx = self.color_decoder(x)
+    ex = self.error_decoder(x)
+
+    color = relu(cx)
+    error = nn.functional.softplus(ex)
+
+    return color, error
+
+class ErrPredDriver:
+  def __init__(self, cfg, device):
+    num_input_channels = len(get_model_channels(cfg.features))
+
+    transfer = get_transfer_function(cfg)
+    self.tonemap = lambda c: transfer.forward(torch.clamp(c, min=1e-6))
+    self.tonemapInverse = lambda c: transfer.inverse(torch.clamp(c, min=1e-6, max=1.0-1e-6))
+    self.model = UNetErrorPredictor(self.tonemap, num_input_channels)
+    self.model.to(device)
+
+    if cfg.base_model:
+      checkpoint = torch.load(cfg.base_model, map_location=device)
+      ms = filter_model_state(checkpoint['model_state'], mappings={'decoder.': 'color_decoder.'})
+      self.model.load_state_dict(ms, strict=False)
+
+    self.criterion = get_loss_function(cfg)
+    self.criterion.to(device)
+
+    self.errorCriterion = ErrorLoss()
+    self.errorCriterion.to(device)
+
+  def compute_losses(self, input, target, epoch, **_):
+    outColor, outError = self.model(input)
+
+    targetCol = self.tonemap(target[:, 0:3, ...])
+
+    color_loss = self.criterion(outColor, targetCol)
+    err_loss = self.errorCriterion(targetCol, outColor, outError)
+
+    loss = color_loss + 1e-2 * err_loss
+    return loss, {'loss': loss, 'color_loss': color_loss, 'error_loss': err_loss}
+
+  def compute_infer(self, input, **_):
+    color, error = self.model(input)
+    return self.tonemapInverse(color), error
 
 
 class DenoiseDriver:
@@ -213,4 +273,4 @@ class DenoiseDriver:
 
   def compute_infer(self, input, **_):
     output = self.model(input)
-    return self.tonemapInverse(output)
+    return self.tonemapInverse(output), None

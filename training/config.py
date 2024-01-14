@@ -119,7 +119,7 @@ def parse_args(cmd=None, description=None):
     advanced.add_argument('--transfer', '-x', type=str,
                           choices=['linear', 'srgb', 'pu', 'log'],
                           help='transfer function')
-    advanced.add_argument('--model', '-m', type=str, choices=['unet', 'resunet', 'bnunet'], default='unet',
+    advanced.add_argument('--model', '-m', type=str, choices=['unet', 'resunet', 'bnunet', 'errpredunet'], default='unet',
                           help='network model')
     advanced.add_argument('--loss', '-l', type=str,
                           choices=['l1', 'mape', 'smape', 'l2', 'ssim', 'msssim', 'l1_msssim', 'l1_grad', 'flip', 'flip_grad'],
@@ -131,6 +131,7 @@ def parse_args(cmd=None, description=None):
                           help='size of the cropped image tiles')
     advanced.add_argument('--seed', '-s', type=int,
                           help='seed for random number generation')
+    advanced.add_argument('--base_model', '--bm', type=str, help='model to load for initialization')
 
   if cmd in {'infer', 'compare_image'}:
     parser.add_argument('--metric', '-M', type=str, nargs='*',

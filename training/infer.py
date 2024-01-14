@@ -23,6 +23,7 @@ class Infer(object):
     if not os.path.isdir(result_dir):
       error('result does not exist')
     self.result_cfg = load_config(result_dir)
+    self.result_cfg.base_model = None
     self.device = device
     self.features = self.result_cfg.features
     self.main_feature = get_main_feature(self.features)
@@ -83,15 +84,18 @@ class Infer(object):
     if self.main_feature == 'sh1':
       # Iterate over x, y, z
       color = torch.cat([self.driver.compute_infer(torch.cat((image[:, i:i+3, ...], image[:, 9:, ...]), 1)) for i in [0, 3, 6]], 1)
+      extra = None
     else:
-      color = self.driver.compute_infer(image)
+      color, error = self.driver.compute_infer(image)
+      extra = torch.zeros_like(color[:,0:1,...]) if error is None else error
 
     # Unpad the output
     color = unpad(color).float()
+    extra = unpad(extra).float()
 
     # Sanitize the output
     color = torch.clamp(color, min=0.) / exposure
-    return color
+    return torch.cat((color, torch.ones_like(extra), extra), dim=1)
 
 def main():
   # Parse the command line arguments
@@ -171,7 +175,7 @@ def main():
 
         input = input[:, 0:infer.num_main_channels, ...] # keep only the main feature
         input_srgb  = transform_feature(input,  infer.main_feature, 'srgb', tonemap_exposure)
-        output_srgb = transform_feature(output, infer.main_feature, 'srgb', tonemap_exposure)
+        output_srgb = transform_feature(output[:,0:3,...], infer.main_feature, 'srgb', tonemap_exposure)
 
         # Compute metrics
         metric_str = ''

@@ -8,6 +8,7 @@ import torch.cuda.amp as amp
 
 from util import *
 from image import *
+from color import *
 from ssim import SSIM, MS_SSIM
 from flip import LDRFLIPLoss
 
@@ -100,3 +101,9 @@ class MixLoss(nn.Module):
 
   def forward(self, input, target):
     return sum([l(input, target) * w for l, w in zip(self.losses, self.weights)])
+
+class ErrorLoss(nn.Module):
+  def forward(self, target, denoised, error):
+    targetMean = channel_mean(torch.abs(target) + 1e-2)
+    trueError = channel_mean(torch.abs(denoised - target))
+    return torch.nn.functional.leaky_relu((error - trueError) / targetMean, negative_slope=-10.0).mean()

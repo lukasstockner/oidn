@@ -172,6 +172,12 @@ def save_image(filename, image):
       raise RuntimeError('could not create image: "' + filename + '"')
     format = oiio.FLOAT if ext == 'exr' else oiio.UINT8
     spec = oiio.ImageSpec(image.shape[1], image.shape[0], image.shape[2], format)
+    if image.shape[2] == 5:
+      spec.channelnames = ("Image.R", "Image.G", "Image.B", "Image.A", "Extra.X")
+    elif image.shape[2] > 4:
+      spec.channelnames = tuple(
+        (f"Channel{(i//3)*3}.{'RGB'[i%3]}" if ((i // 3)*3 + 2 < image.shape[2]) else f"Channel{i}") for i in range(image.shape[2])
+      )
     if ext == 'exr':
       spec.attribute('compression', 'piz')
     elif ext == 'png':
