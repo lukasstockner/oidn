@@ -2,6 +2,7 @@
 ## SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -32,6 +33,11 @@ def pool(x):
 # 2x2 nearest-neighbor upsample function
 def upsample(x):
   return F.interpolate(x, scale_factor=2, mode='nearest')
+def upsample_lin(x):
+  return F.interpolate(x, scale_factor=2, mode='bilinear')
+
+def downsample(x):
+  return F.avg_pool2d(x, (2, 2))
 
 # Channel concatenation function
 def concat(*tensors):
@@ -79,6 +85,53 @@ def Conv(*args, layer=ConvLayer):
 
 
 
+class KernelPredictor(nn.Module):
+  def __init__(self, in_channels):
+    super().__init__()
+
+    self.radius = 10
+    self.diameter = 2*self.radius + 1
+    self.n_support = self.diameter*self.diameter
+    self.padding = (self.diameter - 1) // 2
+    self.intermediate = in_channels * int(math.sqrt(self.n_support / in_channels))
+
+    self.expand1 = nn.Conv2d(in_channels, self.intermediate, 1)
+    self.expand2 = nn.Conv2d(self.intermediate, self.n_support, 1)
+
+  def forward(self, color, data):
+    b, _, w, h = color.shape
+
+    # Expand data to kernel
+    kernel = self.expand2(relu(self.expand1(data)))
+
+    # Normalize kernel
+    kernel = nn.functional.softmax(kernel, dim=1)
+
+    if True:
+      # Manually perform convolution to avoid torch.nn.functional.unfold memory requirements
+      output = torch.zeros_like(color)
+      color = torch.nn.functional.pad(color, (self.radius, self.radius, self.radius, self.radius))
+      i = 0
+      for dx in range(0, self.diameter):
+        for dy in range(0, self.diameter):
+          output = torch.addcmul(output, 1.0, color[:, :, dx:w+dx, dy:h+dy], kernel[:, i:i+1, :, :])
+          i += 1
+    else:
+      kernel = kernel.view(b, self.n_support, -1)
+
+      # Reshape colors
+      color = torch.nn.functional.unfold(color, (self.diameter, self.diameter), padding=self.padding)
+      color = color.view(b, 3, self.n_support, -1)
+
+      # Perform dot product over kernel support
+      kernel = kernel.unsqueeze(1).repeat(1, 3, 1, 1)
+      output = torch.sum(color * kernel, 2)
+
+      # Reshape output
+      output = output.view(b, 3, w, h)
+
+    return output
+
 ec1  = 32
 ec2  = 48
 ec3  = 64
@@ -119,8 +172,9 @@ class UNetEncoder(nn.Module):
     return x, pool3, pool2, pool1, input
 
 class UNetDecoder(nn.Module):
-  def __init__(self, in_channels, out_channels, scale=1, layer=ConvLayer):
+  def __init__(self, in_channels, out_channels, want_intermediate=False, scale=1, layer=ConvLayer):
     super().__init__()
+    self.want_intermediate = want_intermediate
 
     # Convolutions
     C = lambda *x: Conv(*x, layer=layer)
@@ -140,14 +194,17 @@ class UNetDecoder(nn.Module):
     x = concat(upsample(x), pool3)
     x = self.conv4(x)
     x = concat(upsample(x), pool2)
-    x = self.conv3(x)
+    x = int2 = self.conv3(x)
     x = concat(upsample(x), pool1)
-    x = self.conv2(x)
+    x = int1 = self.conv2(x)
     x = concat(upsample(x), input)
     x = self.conv1(x)
     x = self.conv0(x)
 
-    return x
+    if self.want_intermediate:
+      return x, int1, int2
+    else:
+      return x
 
 
 
@@ -174,6 +231,46 @@ class UNetDenoiser(nn.Module):
     return relu(x)
 
 
+class KPCNDenoiser(nn.Module):
+  def __init__(self, tonemap, in_channels=3):
+    super().__init__()
+    self.tonemap = tonemap
+
+    self.encoder = UNetEncoder(in_channels)
+    self.decoder = UNetDecoder(in_channels, 32, want_intermediate=True)
+
+    self.kernel2 = KernelPredictor(dc3)
+    self.kernel1 = KernelPredictor(dc2-1)
+    self.kernel0 = KernelPredictor(32-1)
+
+    self.alignment = self.encoder.alignment
+
+  def multiscaleKernel(self, kernel, data, image, prev):
+    kernelData = data[:, 0:-1, ...]
+    correctionWeight = torch.unsqueeze(data[:, -1, ...], 1)
+
+    # Predict kernel and apply it to the image
+    filtered = kernel(image, kernelData)
+
+    # Multi-scale reconstruction: Remove coarse detail from the filtered
+    # image, replace it with the lower-scale input
+    correction = upsample_lin(prev - downsample(filtered))
+
+    return filtered + correctionWeight * correction
+
+  def forward(self, input):
+    fc = input[:, 0:3, ...]
+    hc = downsample(fc)
+    qc = downsample(hc)
+
+    input = concat(self.tonemap(input[:, 0:3, ...]), input[:, 3:, ...])
+    fk, hk, qk = self.decoder(self.encoder(input))
+
+    filtered = self.kernel2(qc, qk)
+    filtered = self.multiscaleKernel(self.kernel1, hk, hc, filtered)
+    filtered = self.multiscaleKernel(self.kernel0, fk, fc, filtered)
+
+    return self.tonemap(filtered)
 
 
 
@@ -250,6 +347,8 @@ class DenoiseDriver:
     self.tonemapInverse = lambda c: transfer.inverse(torch.clamp(c, min=1e-6, max=1.0-1e-6))
     if cfg.model == 'unet':
       self.model = UNetDenoiser(self.tonemap, num_input_channels)
+    elif cfg.model == 'kpcn':
+      self.model = KPCNDenoiser(self.tonemap, num_input_channels)
     elif cfg.model == 'resunet':
       self.model = UNetDenoiser(self.tonemap, num_input_channels, layer=ResBlock)
     elif cfg.model == 'bnunet':
