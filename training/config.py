@@ -121,7 +121,7 @@ def parse_args(cmd=None, description=None):
     advanced.add_argument('--model', '-m', type=str, choices=['unet'], default='unet',
                           help='network model')
     advanced.add_argument('--loss', '-l', type=str,
-                          choices=['l1', 'mape', 'smape', 'l2', 'ssim', 'msssim', 'l1_msssim', 'l1_grad'],
+                          choices=['l1', 'mape', 'smape', 'l2', 'ssim', 'msssim', 'l1_msssim', 'l1_grad', 'flip', 'flip_grad'],
                           default='l1_msssim',
                           help='loss function')
     advanced.add_argument('--msssim_weights', type=float, nargs='*',
@@ -133,7 +133,7 @@ def parse_args(cmd=None, description=None):
 
   if cmd in {'infer', 'compare_image'}:
     parser.add_argument('--metric', '-M', type=str, nargs='*',
-                        choices=['psnr', 'mse', 'ssim', 'msssim'], default=['psnr', 'ssim'],
+                        choices=['psnr', 'mse', 'ssim', 'msssim'], default=['psnr', 'ssim', 'flip'],
                         help='metrics to compute')
 
   if cmd in {'infer'}:

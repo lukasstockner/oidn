@@ -9,6 +9,7 @@ import torch.cuda.amp as amp
 from util import *
 from image import *
 from ssim import SSIM, MS_SSIM
+from flip import LDRFLIPLoss
 
 def get_loss_function(cfg):
   type = cfg.loss
@@ -29,6 +30,10 @@ def get_loss_function(cfg):
     return MixLoss([L1Loss(), MSSSIMLoss(weights=cfg.msssim_weights)], [0.16, 0.84])
   elif type == 'l1_grad':
     return MixLoss([L1Loss(), GradientLoss()], [0.5, 0.5])
+  elif type == 'flip':
+    return FLIPLoss()
+  elif type == 'flip_grad':
+    return MixLoss([FLIPLoss(), GradientLoss()], [0.8, 0.2])
   else:
     error('invalid loss function')
 
@@ -71,6 +76,15 @@ class MSSSIMLoss(nn.Module):
   def forward(self, input, target):
     with amp.autocast(enabled=False):
       return 1. - self.msssim(input.float(), target.float())
+
+class FLIPLoss(nn.Module):
+  def __init__(self):
+    super().__init__()
+    self.flip = LDRFLIPLoss()
+
+  def forward(self, input, target):
+    with amp.autocast(enabled=False):
+      return self.flip(input.float(), target.float(), linear=True)
 
 # Gradient loss
 class GradientLoss(nn.Module):

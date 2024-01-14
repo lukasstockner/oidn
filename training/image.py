@@ -7,6 +7,7 @@ import torch
 import OpenImageIO as oiio
 
 from ssim import ssim, ms_ssim
+from flip import LDRFLIPLoss
 from util import *
 
 ## -----------------------------------------------------------------------------
@@ -48,6 +49,8 @@ def compare_images(a, b, metric='psnr'):
     return ssim(a, b, data_range=1.)
   elif metric == 'msssim':
     return ms_ssim(a, b, data_range=1.)
+  elif metric == 'flip':
+    return LDRFLIPLoss()(a, b)
   else:
     raise ValueError('invalid error metric')
 
