@@ -15,6 +15,8 @@ from model import *
 from color import *
 from result import *
 
+VAR_PROP = False
+
 # Inference function object
 class Infer(object):
   def __init__(self, cfg, device, result=None):
@@ -31,8 +33,11 @@ class Infer(object):
     self.all_channels = get_dataset_channels(self.features)
     self.num_main_channels = len(get_dataset_channels(self.main_feature))
 
+    if VAR_PROP:
+      self.features = self.features + ['var']
+
     # Initialize the model
-    self.driver = get_driver(self.result_cfg, device)
+    self.driver = get_driver(self.result_cfg, device, use_varprop=VAR_PROP)
 
     # Load the checkpoint
     checkpoint = load_checkpoint(result_dir, device, cfg.num_epochs, self.driver.model)
@@ -57,7 +62,7 @@ class Infer(object):
         self.aux_infers[aux_infer.main_feature] = aux_infer
 
   # Inference function
-  def __call__(self, input, exposure=1.):
+  def __call__(self, input, exposure=1., spp=1, **_):
     image = input.clone()
 
     shape = image.shape
@@ -67,7 +72,8 @@ class Infer(object):
 
     image = pad(image)
     color = image[:, 0:3, ...] * exposure
-    features = image[:, 3:9, ...]
+    features = image[:, 6:12, ...] if VAR_PROP else image[:, 3:9, ...]
+    variance = image[:, 3:6, ...] * exposure * exposure / spp if VAR_PROP else None
     image = concat(color, features)
 
     # Prefilter the auxiliary features
@@ -86,7 +92,7 @@ class Infer(object):
       color = torch.cat([self.driver.compute_infer(torch.cat((image[:, i:i+3, ...], image[:, 9:, ...]), 1)) for i in [0, 3, 6]], 1)
       extra = None
     else:
-      color, error = self.driver.compute_infer(image)
+      color, error = self.driver.compute_infer(image, variance=variance)
       extra = torch.zeros_like(color[:,0:1,...]) if error is None else error
 
     # Unpad the output
@@ -163,6 +169,8 @@ def main():
       for input_name in input_names:
         print(input_name, '...', end='', flush=True)
 
+        spp = int(input_name.split('_')[-1])
+
         # Load the input image
         input = load_image_features(os.path.join(data_dir, input_name), infer.features)
 
@@ -171,7 +179,7 @@ def main():
 
         # Infer
         input = image_to_tensor(input, batch=True).to(device)
-        output = infer(input, exposure)
+        output = infer(input, exposure, spp=spp)
 
         input = input[:, 0:infer.num_main_channels, ...] # keep only the main feature
         input_srgb  = transform_feature(input,  infer.main_feature, 'srgb', tonemap_exposure)

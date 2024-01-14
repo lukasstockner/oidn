@@ -12,9 +12,13 @@ from util import *
 from loss import *
 from result import *
 
-def get_driver(cfg, device):
+def get_driver(cfg, device, use_varprop=False):
   if cfg.model == 'errpredunet':
     return ErrPredDriver(cfg, device)
+  elif use_varprop and cfg.model == 'kpcn':
+    return DenoiseDriverKPCNVar(cfg, device)
+  elif use_varprop and cfg.model == 'unet':
+    return DenoiseDriverJVP(cfg, device)
   else:
     return DenoiseDriver(cfg, device)
 
@@ -85,6 +89,43 @@ def Conv(*args, layer=ConvLayer):
 
 
 
+class PoolLayer(nn.MaxPool2d):
+  def __init__(self):
+    super().__init__((2, 2))
+
+# ConvLayerJ and PoolLayerJ are used to propagate gradients for efficient JVP evaluation
+class ConvLayerJ(torch.nn.Conv2d):
+  N = 4
+
+  def __init__(self, in_channels, out_channels):
+    super().__init__(in_channels, out_channels, 3, padding=1)
+
+  def forward(self, input):
+    x = super().forward(input)
+
+    N = ConvLayerJ.N+1
+    assert input.shape[0] % N == 0
+    K = input.shape[0] // N
+
+    mask = x[0:K,...] > 0.0
+    x = torch.where(mask.repeat(N, 1, 1, 1), x, 0.0)
+
+    return x
+
+class PoolLayerJ(nn.Module):
+  def forward(self, x):
+    N = ConvLayerJ.N+1
+    assert x.shape[0] % N == 0
+    K = x.shape[0] // N
+
+    mask = x[0:K, ..., 0::2] > x[0:K, ..., 1::2]
+    x = torch.where(mask.repeat(N, 1, 1, 1), x[..., 0::2], x[..., 1::2])
+
+    mask = x[0:K, ..., 0::2, :] > x[0:K, ..., 1::2, :]
+    x = torch.where(mask.repeat(N, 1, 1, 1), x[..., 0::2, :], x[..., 1::2, :])
+
+    return x
+
 class KernelPredictor(nn.Module):
   def __init__(self, in_channels):
     super().__init__()
@@ -98,7 +139,7 @@ class KernelPredictor(nn.Module):
     self.expand1 = nn.Conv2d(in_channels, self.intermediate, 1)
     self.expand2 = nn.Conv2d(self.intermediate, self.n_support, 1)
 
-  def forward(self, color, data):
+  def forward(self, color, data, square=False):
     b, _, w, h = color.shape
 
     # Expand data to kernel
@@ -106,6 +147,9 @@ class KernelPredictor(nn.Module):
 
     # Normalize kernel
     kernel = nn.functional.softmax(kernel, dim=1)
+
+    if square:
+      kernel = torch.square_(kernel)
 
     if True:
       # Manually perform convolution to avoid torch.nn.functional.unfold memory requirements
@@ -155,18 +199,20 @@ class UNetEncoder(nn.Module):
     self.conv3 = C(ec3, ec4)
     self.conv4 = C(ec4, ec5)
 
+    self.pool = (PoolLayerJ if layer == ConvLayerJ else PoolLayer)()
+
     # Images must be padded to multiples of the alignment
     self.alignment = 16
 
   def forward(self, input):
     x = self.conv0(input)
-    x = pool1 = pool(x)
+    x = pool1 = self.pool(x)
     x = self.conv1(x)
-    x = pool2 = pool(x)
+    x = pool2 = self.pool(x)
     x = self.conv2(x)
-    x = pool3 = pool(x)
+    x = pool3 = self.pool(x)
     x = self.conv3(x)
-    x = pool(x)
+    x = self.pool(x)
     x = self.conv4(x)
 
     return x, pool3, pool2, pool1, input
@@ -179,7 +225,7 @@ class UNetDecoder(nn.Module):
     # Convolutions
     C = lambda *x: Conv(*x, layer=layer)
     # Don't use residual or BN for last decoder stage, it might shift color values
-    C_last = lambda *x: Conv(*x, layer=ConvLayer)
+    C_last = lambda *x: Conv(*x, layer=layer if layer == ConvLayerJ else ConvLayer)
     self.conv5 = C(ec5, ec5//scale)
     self.conv4 = C(ec5//scale+ec3, dc4//scale, dc4//scale)
     self.conv3 = C(dc4//scale+ec2, dc3//scale, dc3//scale)
@@ -215,7 +261,7 @@ class UNetDecoder(nn.Module):
 
 
 class UNetDenoiser(nn.Module):
-  def __init__(self, tonemap, in_channels=3, out_channels=3, layer=ConvLayer):
+  def __init__(self, tonemap, in_channels=3, out_channels=3, layer=ConvLayer, lastReLU=True):
     super().__init__()
     self.tonemap = tonemap
 
@@ -223,13 +269,15 @@ class UNetDenoiser(nn.Module):
     self.decoder = UNetDecoder(in_channels, out_channels, layer=layer)
 
     self.alignment = self.encoder.alignment
+    self.lastReLU = lastReLU
 
   def forward(self, input):
     x = concat(self.tonemap(input[:, 0:3, ...]), input[:, 3:, ...])
     x = self.encoder(x)
     x = self.decoder(x)
-    return relu(x)
-
+    if self.lastReLU:
+      x = relu(x)
+    return x
 
 class KPCNDenoiser(nn.Module):
   def __init__(self, tonemap, in_channels=3):
@@ -258,7 +306,7 @@ class KPCNDenoiser(nn.Module):
 
     return filtered + correctionWeight * correction
 
-  def forward(self, input):
+  def forward(self, input, variance=None):
     fc = input[:, 0:3, ...]
     hc = downsample(fc)
     qc = downsample(hc)
@@ -269,6 +317,9 @@ class KPCNDenoiser(nn.Module):
     filtered = self.kernel2(qc, qk)
     filtered = self.multiscaleKernel(self.kernel1, hk, hc, filtered)
     filtered = self.multiscaleKernel(self.kernel0, fk, fc, filtered)
+
+    if variance is not None:
+      return self.tonemap(filtered), self.kernel0(variance, fk[:, :-1, ...], square=True)
 
     return self.tonemap(filtered)
 
@@ -373,3 +424,106 @@ class DenoiseDriver:
   def compute_infer(self, input, **_):
     output = self.model(input)
     return self.tonemapInverse(output), None
+
+
+class DenoiseDriverKPCNVar:
+  def __init__(self, cfg, device):
+    num_input_channels = len(get_model_channels(cfg.features))
+
+    transfer = get_transfer_function(cfg)
+    self.tonemap = lambda c: transfer.forward(torch.clamp(c, min=1e-6))
+    self.tonemapInverse = lambda c: transfer.inverse(torch.clamp(c, min=1e-6, max=1.0-1e-6))
+    if cfg.model == 'kpcn':
+      self.model = KPCNDenoiser(self.tonemap, num_input_channels)
+    else:
+      assert False
+    self.model.to(device)
+
+    self.criterion = get_loss_function(cfg)
+    self.criterion.to(device)
+
+  def compute_losses(self, input, target, **_):
+    raise NotImplementedError
+
+  def compute_infer(self, input, variance=None, **_):
+    output, outVariance = self.model(input, variance=variance)
+    stddev = torch.sqrt(outVariance)
+    _, stddev = tonemap_transfer(self.tonemap, output, stddev)
+    stddev = channel_mean(stddev)
+    return self.tonemapInverse(output), stddev
+
+
+class DenoiseDriverJVP:
+  def __init__(self, cfg, device):
+    num_input_channels = len(get_model_channels(cfg.features))
+
+    transfer = get_transfer_function(cfg)
+    self.tonemap = lambda c: transfer.forward(torch.clamp(c, min=1e-6))
+    self.tonemapInverse = lambda c: transfer.inverse(torch.clamp(c, min=1e-6, max=1.0-1e-6))
+    if cfg.model == 'unet':
+      self.model = UNetDenoiser(lambda x: x, num_input_channels, layer=ConvLayerJ, lastReLU=False)
+    else:
+      assert False
+    self.model.to(device)
+
+  def compute_losses(self, **_):
+    raise NotImplementedError
+
+  def compute_infer(self, input, variance, **_):
+    stddev = torch.sqrt(variance)
+
+    # Crude tonemapping propagation, should use derivative
+    color = input[:, 0:3, ...]
+    features = input[:, 3:, ...]
+    tmColor, tmStddev = tonemap_transfer(self.tonemap, color, stddev)
+    inputs = [concat(tmColor, features)]
+
+    for _ in range(ConvLayerJ.N):
+      tangent = torch.sign(torch.rand_like(tmStddev) - 0.5) * tmStddev
+      inputs.append(concat(tmColor - tangent, features))
+
+    outputs = self.model(torch.concat(inputs, 0))
+
+    b = input.shape[0]
+    color = relu(outputs[0:b, ...])
+
+    # JVP_x(u) = f(x) - f_x(x - u)
+    jvps = torch.unsqueeze(color, 0) - outputs[b:, ...].view(ConvLayerJ.N, b, outputs.shape[1], outputs.shape[2], outputs.shape[3])
+    stddev = channel_mean(torch.sqrt(torch.mean(torch.square_(jvps), 0)))
+
+    return self.tonemapInverse(color), stddev
+
+
+class DenoiseDriverNaiveJVP:
+  def __init__(self, cfg, device):
+    num_input_channels = len(get_model_channels(cfg.features))
+
+    transfer = get_transfer_function(cfg)
+    self.tonemap = lambda c: transfer.forward(torch.clamp(c, min=1e-6))
+    self.tonemapInverse = lambda c: transfer.inverse(torch.clamp(c, min=1e-6, max=1.0-1e-6))
+    if cfg.model == 'unet':
+      self.model = UNetDenoiser(lambda x: x, num_input_channels, layer=ConvLayer, lastReLU=False)
+    else:
+      assert False
+    self.model.to(device)
+
+  def compute_losses(self, **_):
+    raise NotImplementedError
+
+  def compute_infer(self, input, variance, **_):
+    stddev = torch.sqrt(variance)
+
+    # Crude tonemapping propagation, should use derivative
+    color = input[:, 0:3, ...]
+    features = input[:, 3:, ...]
+    tmColor, tmStddev = tonemap_transfer(self.tonemap, color, stddev)
+
+    input = concat(tmColor, features)
+    tangent = concat(torch.sign(torch.rand_like(tmStddev) - 0.5) * tmStddev, torch.zeros_like(features))
+
+    output, jvp = torch.func.jvp(self.model, (input,), (tangent,))
+
+    color = relu(output)
+    stddev = channel_mean(torch.abs_(jvp))
+
+    return self.tonemapInverse(color), stddev
