@@ -10,7 +10,7 @@ from util import *
 from image import *
 from ssim import SSIM, MS_SSIM
 
-def get_loss_function(cfg):
+def get_color_loss_function(cfg):
   type = cfg.loss
   if type == 'l1':
     return L1Loss()
@@ -31,6 +31,14 @@ def get_loss_function(cfg):
     return MixLoss([L1Loss(), GradientLoss()], [0.5, 0.5])
   else:
     error('invalid loss function')
+
+def get_loss_function(cfg):
+  if type == 'unet':
+    return get_color_loss_function(cfg)
+  elif type == 'unet_error':
+    return ErrorLoss(get_color_loss_function(cfg))
+  else:
+    error('invalid model')
 
 # L1 loss (seems to be faster than the built-in L1Loss)
 class L1Loss(nn.Module):
@@ -86,3 +94,18 @@ class MixLoss(nn.Module):
 
   def forward(self, input, target):
     return sum([l(input, target) * w for l, w in zip(self.losses, self.weights)])
+
+class ErrorLoss(nn.Module):
+  def __init__(self, color_loss):
+    super(ErrorLoss, self).__init__()
+    self.color_loss = color_loss
+
+  def forward(self, result, target):
+    color, error = result
+
+    target_mean = (torch.abs(target) + 1e-2).mean(1, keepdim=True)
+    true_error = (torch.abs(color - target)).mean(1, keepdim=True)
+
+    color_loss = self.color_loss(color, target)
+    error_loss = F.leaky_relu((error - true_error) / target_mean, negative_slope=-10.0).mean()
+    return color_loss + 1e-2 * error_loss

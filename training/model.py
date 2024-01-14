@@ -14,6 +14,8 @@ def get_model(cfg):
   num_input_channels = len(get_model_channels(cfg.features))
   if type == 'unet':
     return UNet(num_input_channels)
+  elif type == 'unet_error':
+    return UNet(num_input_channels, error_prediction=True)
   else:
     error('invalid model')
 
@@ -46,7 +48,7 @@ def concat(a, b):
 ## -----------------------------------------------------------------------------
 
 class UNet(nn.Module):
-  def __init__(self, in_channels=3, out_channels=3):
+  def __init__(self, in_channels=3, out_channels=3, error_prediction=False):
     super(UNet, self).__init__()
 
     # Number of channels per layer
@@ -62,6 +64,12 @@ class UNet(nn.Module):
     dc1a = 64
     dc1b = 32
     oc   = out_channels
+    errc5 = 48
+    errc4  = 56
+    errc3  = 48
+    errc2  = 32
+    errc1a = 32
+    errc1b = 16
 
     # Convolutions
     self.enc_conv0  = Conv(ic,      ec1)
@@ -80,6 +88,19 @@ class UNet(nn.Module):
     self.dec_conv1a = Conv(dc2+ic,  dc1a)
     self.dec_conv1b = Conv(dc1a,    dc1b)
     self.dec_conv0  = Conv(dc1b,    oc)
+
+    self.error_prediction = error_prediction
+    if error_prediction:
+      self.err_conv5b = Conv(ec5,       errc5)
+      self.err_conv4a = Conv(errc5+ec3, errc4)
+      self.err_conv4b = Conv(errc4,     errc4)
+      self.err_conv3a = Conv(errc4+ec2, errc3)
+      self.err_conv3b = Conv(errc3,     errc3)
+      self.err_conv2a = Conv(errc3+ec1, errc2)
+      self.err_conv2b = Conv(errc2,     errc2)
+      self.err_conv1a = Conv(errc2+ic,  errc1a)
+      self.err_conv1b = Conv(errc1a,    errc1b)
+      self.err_conv0  = Conv(errc1b,    1)
 
     # Images must be padded to multiples of the alignment
     self.alignment = 16
@@ -103,7 +124,7 @@ class UNet(nn.Module):
     x = pool(x)                      # pool4
 
     # Bottleneck
-    x = relu(self.enc_conv5a(x))     # enc_conv5a
+    x = bottleneck = relu(self.enc_conv5a(x))     # enc_conv5a
     x = relu(self.enc_conv5b(x))     # enc_conv5b
 
     # Decoder
@@ -131,4 +152,33 @@ class UNet(nn.Module):
 
     x = self.dec_conv0(x)            # dec_conv0
 
-    return x
+    if not self.error_prediction:
+      return x
+
+    # Error Prediction
+    # -------------------------------------------
+    e = relu(self.err_conv5b(bottleneck))  # err_conv5b
+
+    e = upsample(e)                        # upsample4
+    e = concat(e, pool3)                   # concat4
+    e = relu(self.err_conv4a(e))           # err_conv4a
+    e = relu(self.err_conv4b(e))           # err_conv4b
+
+    e = upsample(e)                        # upsample3
+    e = concat(e, pool2)                   # concat3
+    e = relu(self.err_conv3a(e))           # err_conv3a
+    e = relu(self.err_conv3b(e))           # err_conv3b
+
+    e = upsample(e)                        # upsample2
+    e = concat(e, pool1)                   # concat2
+    e = relu(self.err_conv2a(e))           # err_conv2a
+    e = relu(self.err_conv2b(e))           # err_conv2b
+
+    e = upsample(e)                        # upsample1
+    e = concat(e, input)                   # concat1
+    e = relu(self.err_conv1a(e))           # err_conv1a
+    e = relu(self.err_conv1b(e))           # err_conv1b
+
+    e = F.softplus(self.err_conv0(e))      # err_conv0
+
+    return x, e

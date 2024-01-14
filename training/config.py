@@ -118,7 +118,7 @@ def parse_args(cmd=None, description=None):
                         help='number of data loader threads per device')
     parser.add_argument('--precision', '-p', type=str, choices=['fp32', 'mixed'],
                         help='training precision')
-    advanced.add_argument('--model', '-m', type=str, choices=['unet'], default='unet',
+    advanced.add_argument('--model', '-m', type=str, choices=['unet', 'unet_error'], default='unet',
                           help='network model')
     advanced.add_argument('--loss', '-l', type=str,
                           choices=['l1', 'mape', 'smape', 'l2', 'ssim', 'msssim', 'l1_msssim', 'l1_grad'],
