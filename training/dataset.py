@@ -332,6 +332,8 @@ class PreprocessedDataset(Dataset):
     self.aux_features = get_aux_features(cfg.features)
     self.clean_aux = cfg.clean_aux and self.aux_features
     self.target_features = ['hdr']
+    if cfg.model in ['e2enet', 'bothnet']:
+      self.target_features += ['var']
 
     # Get the channels
     self.channels = get_dataset_channels(cfg.features)

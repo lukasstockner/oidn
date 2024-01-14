@@ -75,6 +75,7 @@ class Infer(object):
     features = image[:, 6:12, ...] if VAR_PROP else image[:, 3:9, ...]
     variance = image[:, 3:6, ...] * exposure * exposure / spp if VAR_PROP else None
     image = concat(color, features)
+    sampleMap = torch.ones_like(image[:, 0:1, ...]) * spp
 
     # Prefilter the auxiliary features
     for aux_feature, aux_infer in self.aux_infers.items():
@@ -92,7 +93,7 @@ class Infer(object):
       color = torch.cat([self.driver.compute_infer(torch.cat((image[:, i:i+3, ...], image[:, 9:, ...]), 1)) for i in [0, 3, 6]], 1)
       extra = None
     else:
-      color, error = self.driver.compute_infer(image, variance=variance)
+      color, error = self.driver.compute_infer(image, variance=variance, spp_pass=sampleMap)
       extra = torch.zeros_like(color[:,0:1,...]) if error is None else error
 
     # Unpad the output

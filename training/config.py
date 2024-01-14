@@ -119,7 +119,7 @@ def parse_args(cmd=None, description=None):
     advanced.add_argument('--transfer', '-x', type=str,
                           choices=['linear', 'srgb', 'pu', 'log'],
                           help='transfer function')
-    advanced.add_argument('--model', '-m', type=str, choices=['unet', 'resunet', 'bnunet', 'kpcn', 'errpredunet'], default='unet',
+    advanced.add_argument('--model', '-m', type=str, choices=['unet', 'resunet', 'bnunet', 'kpcn', 'errpredunet', 'e2enet', 'bothnet'], default='unet',
                           help='network model')
     advanced.add_argument('--loss', '-l', type=str,
                           choices=['l1', 'mape', 'smape', 'l2', 'ssim', 'msssim', 'l1_msssim', 'l1_grad', 'flip', 'flip_grad'],

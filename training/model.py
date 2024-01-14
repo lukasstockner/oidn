@@ -15,6 +15,10 @@ from result import *
 def get_driver(cfg, device, use_varprop=False):
   if cfg.model == 'errpredunet':
     return ErrPredDriver(cfg, device)
+  elif cfg.model == 'e2enet':
+    return E2EDriver(cfg, device)
+  elif cfg.model == 'bothnet':
+    return BothDriver(cfg, device)
   elif use_varprop and cfg.model == 'kpcn':
     return DenoiseDriverKPCNVar(cfg, device)
   elif use_varprop and cfg.model == 'unet':
@@ -88,6 +92,22 @@ def Conv(*args, layer=ConvLayer):
     return nn.Sequential(*list(layer(args[i], args[i+1]) for i in range(0, len(args)-1)))
 
 
+class MiniErrorUNet(nn.Module):
+  def __init__(self):
+    super().__init__()
+    self.e1 = Conv(6, 8, 8)
+    self.e2 = Conv(8, 8)
+    self.bottleneck = Conv(8, 8, 8)
+    self.d2 = Conv(16, 8)
+    self.d1 = Conv(16, 8, 1)
+
+  def forward(self, input):
+    x = pool1 = self.e1(input)
+    x = pool2 = self.e2(pool(x))
+    x = self.bottleneck(pool(x))
+    x = self.d2(concat(upsample(x), pool2))
+    x = self.d1(concat(upsample(x), pool1))
+    return x
 
 class PoolLayer(nn.MaxPool2d):
   def __init__(self):
@@ -176,6 +196,63 @@ class KernelPredictor(nn.Module):
 
     return output
 
+class FakeRenderer(torch.autograd.Function):
+  EXPECTED_VALUE = False
+  ACCURATE_GRADIENT = True
+  VARIANCE_SCALE = 5.0
+
+  @staticmethod
+  def sample(refColor, refRelStdDev, nextSampleMap, varianceScale):
+    # Decode variance from relstddev
+    refVariance = torch.square(refRelStdDev * torch.clamp(refColor, min=1e-3))
+
+    # Parameters of the underlying pixel distribution
+    mean = torch.clamp(refColor, min=1e-7)
+    variance = torch.clamp(refVariance, min=1e-7) / varianceScale
+
+    # Adjust variance based on MC convergence
+    variance = variance / torch.clamp(nextSampleMap, min=1.)
+
+    # Expected distribution of render output using sampleMap
+    alpha = mean * mean / variance
+    beta = mean / variance
+
+    # Sample image rendered with nextSampleMap samples
+    seed = torch.seed()
+    r = torch.distributions.Gamma(alpha[:, 0:1, ...], beta[:, 0:1, ...]).sample()
+    torch.manual_seed(seed)
+    g = torch.distributions.Gamma(alpha[:, 1:2, ...], beta[:, 1:2, ...]).sample()
+    torch.manual_seed(seed)
+    b = torch.distributions.Gamma(alpha[:, 2:3, ...], beta[:, 2:3, ...]).sample()
+
+    return concat(r, g, b)
+
+  @staticmethod
+  def forward(ctx, refColor, refRelStdDev, curColor, curSampleMap, nextSampleMap, varianceScale=None):
+    ctx.save_for_backward(refColor, curColor, curSampleMap, nextSampleMap)
+
+    if FakeRenderer.EXPECTED_VALUE:
+      nextColor = refColor
+    else:
+      nextColor = FakeRenderer.sample(refColor, refRelStdDev, nextSampleMap, varianceScale or FakeRenderer.VARIANCE_SCALE)
+
+    # Combine current and next image
+    output = (curSampleMap * curColor + nextSampleMap * nextColor) / torch.clamp(curSampleMap + nextSampleMap, min=1.)
+    return output
+
+  @staticmethod
+  def backward(ctx, dLoss_dColor):
+    assert not any(ctx.needs_input_grad[i] for i in [0, 1, 2, 3, 5])
+
+    refColor, curColor, curSampleMap, nextSampleMap = ctx.saved_tensors
+    if FakeRenderer.ACCURATE_GRADIENT:
+      dColor_dSample = curSampleMap * (refColor - curColor) / torch.clamp((curSampleMap + nextSampleMap)**2, min=1.)
+    else:
+      dColor_dSample = (refColor - curColor) / torch.clamp(curSampleMap, min=1.)
+    gradSampleMap = torch.sum(dLoss_dColor * dColor_dSample, dim=1, keepdim=True)
+
+    return None, None, None, None, gradSampleMap, None
+
 ec1  = 32
 ec2  = 48
 ec3  = 64
@@ -218,7 +295,7 @@ class UNetEncoder(nn.Module):
     return x, pool3, pool2, pool1, input
 
 class UNetDecoder(nn.Module):
-  def __init__(self, in_channels, out_channels, want_intermediate=False, scale=1, layer=ConvLayer):
+  def __init__(self, in_channels, out_channels, aux_channels=0, want_intermediate=False, scale=1, layer=ConvLayer):
     super().__init__()
     self.want_intermediate = want_intermediate
 
@@ -226,7 +303,7 @@ class UNetDecoder(nn.Module):
     C = lambda *x: Conv(*x, layer=layer)
     # Don't use residual or BN for last decoder stage, it might shift color values
     C_last = lambda *x: Conv(*x, layer=layer if layer == ConvLayerJ else ConvLayer)
-    self.conv5 = C(ec5, ec5//scale)
+    self.conv5 = C(ec5+aux_channels, ec5//scale)
     self.conv4 = C(ec5//scale+ec3, dc4//scale, dc4//scale)
     self.conv3 = C(dc4//scale+ec2, dc3//scale, dc3//scale)
     self.conv2 = C(dc3//scale+ec1, dc2//scale, dc2//scale)
@@ -253,6 +330,15 @@ class UNetDecoder(nn.Module):
       return x
 
 
+class GlobalSummary(nn.Module):
+  def __init__(self, in_channels, out_channels):
+    super().__init__()
+    self.conv = nn.Conv2d(2*in_channels, out_channels, 1)
+  
+  def forward(self, input):
+    std, mean = torch.std_mean(input, dim=(2, 3), keepdim=True)
+    combined = self.conv(concat(mean, std))
+    return combined.expand(-1, -1, input.shape[2], input.shape[3])
 
 
 
@@ -351,6 +437,305 @@ class UNetErrorPredictor(nn.Module):
     error = nn.functional.softplus(ex)
 
     return color, error
+
+
+
+
+
+
+
+
+
+
+
+class UNetE2EPredictor(nn.Module):
+  BLUR_SAMPLEMAP = False
+  GLOBAL_SUMMARY = True
+
+  def __init__(self, tonemap):
+    super().__init__()
+    self.tonemap = tonemap
+
+    if UNetE2EPredictor.GLOBAL_SUMMARY:
+      aux_channels = 9
+      self.global_summary = GlobalSummary(ec5, 8)
+    else:
+      aux_channels = 1
+      self.global_summary = None
+
+    self.encoder = UNetEncoder(9)
+    self.color_decoder = UNetDecoder(9, 3)
+    self.sample_decoder = UNetDecoder(10, 1, aux_channels=aux_channels, scale=2)
+
+    self.alignment = 16
+
+  def getSamplerIn(self, encoded, sampleMap, relBudget):
+    dense, pool3, pool2, pool1, full = encoded
+    # Add budget info
+    budgetChannel = torch.ones_like(dense[:, 0:1, ...]) * torch.log(relBudget)
+    # Add sample map info
+    sampleChannel = torch.log(sampleMap) - torch.log(sampleMap.mean((2, 3), keepdim=True))
+    # Add global summary info
+    globalSummary = self.global_summary(dense) if self.global_summary else None
+    return concat(dense, budgetChannel, globalSummary), pool3, pool2, pool1, concat(full, sampleChannel)
+
+  def getSampleMap(self, currentSampleMap, predictorOutput, budget):
+    # Blur if requested
+    if UNetE2EPredictor.BLUR_SAMPLEMAP:
+      predictorOutput = torch.nn.functional.avg_pool2d(predictorOutput, kernel_size=3, stride=1, padding=1)
+    # Apply softplus
+    nextSampleMap = torch.nn.functional.softplus(predictorOutput)
+    # Mask out padding areas
+    nextSampleMap = torch.where(currentSampleMap < 1.0, 1e-10, nextSampleMap)
+    # Normalize
+    factor = (budget - 1) * (predictorOutput.shape[2] * predictorOutput.shape[3]) / nextSampleMap.sum((2, 3), keepdim=True)
+    return 1 + nextSampleMap * factor
+
+  def infer(self, input, relBudget = 1.0):
+    if not isinstance(relBudget, torch.Tensor):
+      relBudget = torch.tensor(relBudget)
+
+    # Extract data from input
+    currentColor = input[:, 0:3, ...]
+    currentFeatures = input[:, 3:-1, ...]
+    currentSampleMap = torch.exp2(input[:, -1:, ...])  # TODO: Handle in dataset.py, but need to watch out for fp16 range
+    budget = torch.clamp(currentSampleMap.mean((2, 3), keepdim=True) * relBudget, min=1.0)
+
+    # Apply denoiser to the current state
+    currentEncoded = self.encoder(concat(self.tonemap(currentColor), currentFeatures))
+    currentDenoised = relu(self.color_decoder(currentEncoded))
+
+    # Run sample map predictor
+    predictorOutput = self.sample_decoder(self.getSamplerIn(currentEncoded, currentSampleMap, relBudget))
+    nextSampleMap = self.getSampleMap(currentSampleMap, predictorOutput, budget)
+
+    return currentDenoised, nextSampleMap
+
+  def forward(self, input, target, valid=False):
+    # Extract data from input
+    refColor = target[:, 0:3, ...]
+    refRelStdDev = target[:, 3:6, ...]
+    currentColor = input[:, 0:3, ...]
+    currentFeatures = input[:, 3:-1, ...]
+    currentSampleMap = torch.exp2(input[:, -1:, ...])
+
+    # Pick random sample budget (on average, match existing budget)
+    budget = currentSampleMap.mean((2, 3), keepdim=True)
+    relBudget = torch.distributions.Gamma(10 * torch.ones_like(budget), 0.1 * torch.ones_like(budget)).sample()
+    budget = torch.clamp(budget * relBudget, min=1.0)
+
+    # Apply denoiser to the current state
+    currentEncoded = self.encoder(concat(self.tonemap(currentColor), currentFeatures))
+    currentDenoised = relu(self.color_decoder(currentEncoded))
+
+    # Run sample map predictor
+    predictorOutput = self.sample_decoder(self.getSamplerIn(currentEncoded, currentSampleMap, relBudget))
+    nextSampleMap = self.getSampleMap(currentSampleMap, predictorOutput, budget)
+
+    # Apply fake renderer to approximate next state with the sample map
+    nextColor = FakeRenderer.apply(refColor, refRelStdDev, currentColor, currentSampleMap, nextSampleMap, 1.0 if valid else None)
+
+    # Apply denoiser to the "next" state
+    nextEncoded = self.encoder(concat(self.tonemap(nextColor), currentFeatures))
+    nextDenoised = relu(self.color_decoder(nextEncoded))
+
+    return currentDenoised, nextDenoised, nextSampleMap
+
+class UNetBothPredictor(nn.Module):
+  BLUR_SAMPLEMAP = False
+
+  def __init__(self, tonemap):
+    super().__init__()
+    self.tonemap = tonemap
+
+    self.denoiser = UNetErrorPredictor(self.tonemap, 9)
+    self.sampler = MiniErrorUNet()
+
+    self.alignment = self.denoiser.alignment
+
+  def getSampleMap(self, currentSampleMap, predictorOutput, budget):
+    # Blur if requested
+    if UNetE2EPredictor.BLUR_SAMPLEMAP:
+      predictorOutput = torch.nn.functional.avg_pool2d(predictorOutput, kernel_size=3, stride=1, padding=1)
+    # Apply softplus
+    nextSampleMap = torch.nn.functional.softplus(predictorOutput)
+    # Mask out padding areas
+    nextSampleMap = torch.where(currentSampleMap < 1.0, 1e-10, nextSampleMap)
+    # Normalize
+    factor = (budget - 1) * (predictorOutput.shape[2] * predictorOutput.shape[3]) / nextSampleMap.sum((2, 3), keepdim=True)
+    return 1 + nextSampleMap * factor
+
+  def getSamplerIn(self, noisy, error, sampleMap, relBudget):
+    sampleChannel = torch.log(sampleMap) - torch.log(sampleMap.mean((2, 3), keepdim=True))
+    budgetChannel = torch.ones_like(sampleChannel) * torch.log(relBudget)
+    return concat(self.tonemap(noisy), error, sampleChannel, budgetChannel)
+
+  def infer(self, input, relBudget = 1.0):
+    if not isinstance(relBudget, torch.Tensor):
+      relBudget = torch.tensor(relBudget)
+
+    # Extract data from input
+    currentColor = input[:, 0:3, ...]
+    currentFeatures = input[:, 3:-1, ...]
+    currentSampleMap = torch.exp2(input[:, -1:, ...])  # TODO: Handle in dataset.py, but need to watch out for fp16 range
+    budget = torch.clamp(currentSampleMap.mean((2, 3), keepdim=True) * relBudget, min=1.0)
+
+    # Apply denoiser to the current state
+    currentDenoised, currentError = self.denoiser(concat(currentColor, currentFeatures))
+
+    # Run sample map predictor
+    samplerOutput = self.sampler(self.getSamplerIn(currentColor, currentError, currentSampleMap, relBudget))
+    nextSampleMap = self.getSampleMap(currentSampleMap, samplerOutput, budget)
+
+    return currentDenoised, currentError, nextSampleMap
+
+  def forward(self, input, target, valid=False):
+    # Extract data from input
+    refColor = target[:, 0:3, ...]
+    refRelStdDev = target[:, 3:6, ...]
+    currentColor = input[:, 0:3, ...]
+    currentFeatures = input[:, 3:-1, ...]
+    currentSampleMap = torch.exp2(input[:, -1:, ...])
+
+    # Pick random sample budget (on average, match existing budget)
+    budget = currentSampleMap.mean((2, 3), keepdim=True)
+    relBudget = torch.distributions.Gamma(10 * torch.ones_like(budget), 0.1 * torch.ones_like(budget)).sample()
+    budget = torch.clamp(budget * relBudget, min=1.0)
+
+    # Apply denoiser to the current state
+    currentDenoised, currentError = self.denoiser(concat(currentColor, currentFeatures))
+
+    # Run sample map predictor
+    samplerOutput = self.sampler(self.getSamplerIn(currentColor, currentError, currentSampleMap, relBudget))
+    nextSampleMap = self.getSampleMap(currentSampleMap, samplerOutput, budget)
+
+    # Apply fake renderer to approximate next state with the sample map
+    nextColor = FakeRenderer.apply(refColor, refRelStdDev, currentColor, currentSampleMap, nextSampleMap, 1.0 if valid else None)
+
+    # Apply denoiser to the "next" state
+    nextDenoised, nextError = self.denoiser(concat(nextColor, currentFeatures))
+
+    return currentDenoised, nextDenoised, currentError, nextError, nextSampleMap
+
+
+
+
+
+
+
+class E2EDriver:
+  def __init__(self, cfg, device):
+    assert len(get_model_channels(cfg.features)) == 10
+
+    transfer = get_transfer_function(cfg)
+    self.tonemap = lambda c: transfer.forward(torch.clamp(c, min=1e-6))
+    self.tonemapInverse = lambda c: transfer.inverse(torch.clamp(c, min=1e-6, max=1.0-1e-6))
+    self.model = UNetE2EPredictor(self.tonemap)
+    self.model.to(device)
+
+    if cfg.base_model:
+      checkpoint = torch.load(cfg.base_model, map_location=device)
+      ms = filter_model_state(checkpoint['model_state'], mappings={'decoder.': 'color_decoder.', 'error_decoder.': 'sample_decoder.'})
+
+      # Adapt base model to new channel count (to include aux output channel)
+      init_ms = self.model.state_dict()
+      for k in ms:
+        if k in init_ms and ms[k].shape != init_ms[k].shape:
+          combined = init_ms[k].clone()
+          combined[:, 0:ms[k].shape[1], :, :] = ms[k]
+          ms[k] = combined
+      self.model.load_state_dict(ms, strict=False)
+
+    self.origCriterion = MSSSIMLoss([0.2, 0.2, 0.2, 0.2, 0.2])
+    self.newCriterion = MixLoss([L1Loss(), GradientLoss()], [0.5, 0.5])
+    self.validCriterion = get_loss_function(cfg)
+
+    self.origCriterion.to(device)
+    self.newCriterion.to(device)
+    self.validCriterion.to(device)
+
+
+  def compute_losses(self, input, target, epoch, valid, **_):
+    assert input.shape[1] == 10
+
+    targetCol = self.tonemap(target[:, 0:3, ...])
+    currentDenoised, newDenoised, newSampleMap = self.model(input, target, valid=valid)
+
+    relMap = newSampleMap / newSampleMap.mean((2, 3), keepdim=True)
+    predictorLoss = 1e-11 * torch.square(relMap).mean()
+
+    if valid:
+      # Use mixed criterion to be able to compare validation results
+      currentLoss = self.validCriterion(currentDenoised, targetCol)
+      newLoss = self.validCriterion(newDenoised, targetCol)
+    else:
+      currentLoss = self.origCriterion(currentDenoised, targetCol)
+      newLoss = self.newCriterion(newDenoised, targetCol)
+
+    loss = currentLoss + newLoss + predictorLoss
+    return loss, {'loss': loss, 'color_loss': currentLoss, 'next_loss': newLoss, 'predictor_loss': predictorLoss}
+
+  def compute_infer(self, input, spp_pass=None, rel_budget=1.0, **_):
+    if spp_pass is not None:
+      assert input.shape[1] == 9
+      input = concat(input, torch.log2(spp_pass))
+    color, sampleMap = self.model.infer(input, relBudget=rel_budget)
+    return self.tonemapInverse(color), None
+
+
+class BothDriver:
+  def __init__(self, cfg, device):
+    transfer = get_transfer_function(cfg)
+    self.tonemap = lambda c: transfer.forward(torch.clamp(c, min=1e-6))
+    self.tonemapInverse = lambda c: transfer.inverse(torch.clamp(c, min=1e-6, max=1.0-1e-6))
+    self.model = UNetBothPredictor(self.tonemap)
+    self.model.to(device)
+
+    if cfg.base_model:
+      checkpoint = torch.load(cfg.base_model, map_location=device)
+      ms = filter_model_state(checkpoint['model_state'], mappings={'encoder.': 'denoiser.encoder.', 'color_decoder.': 'denoiser.color_decoder.', 'error_decoder.': 'denoiser.error_decoder.'})
+      self.model.load_state_dict(ms, strict=False)
+
+    self.origCriterion = MSSSIMLoss([0.2, 0.2, 0.2, 0.2, 0.2])
+    self.newCriterion = MixLoss([L1Loss(), GradientLoss()], [0.5, 0.5])
+    self.validCriterion = get_loss_function(cfg)
+    self.errorCriterion = ErrorLoss()
+
+    self.origCriterion.to(device)
+    self.newCriterion.to(device)
+    self.validCriterion.to(device)
+    self.errorCriterion.to(device)
+
+  def compute_losses(self, input, target, epoch, valid, **_):
+    assert input.shape[1] == 10
+
+    targetCol = self.tonemap(target[:, 0:3, ...])
+    currentDenoised, newDenoised, currentError, newError, newSampleMap = self.model(input, target, valid=valid)
+
+    relMap = newSampleMap / newSampleMap.mean((2, 3), keepdim=True)
+    predictorLoss = 1e-11 * torch.square(relMap).mean()
+
+    curErrLoss = self.errorCriterion(targetCol, currentDenoised, currentError)
+    newErrLoss = self.errorCriterion(targetCol, newDenoised, newError)
+
+    if valid:
+      # Use mixed criterion to be able to compare validation results
+      currentLoss = self.validCriterion(currentDenoised, targetCol)
+      newLoss = self.validCriterion(newDenoised, targetCol)
+    else:
+      currentLoss = self.origCriterion(currentDenoised, targetCol)
+      newLoss = self.newCriterion(newDenoised, targetCol)
+
+    loss = currentLoss + newLoss + predictorLoss + 1e-2 * (curErrLoss + newErrLoss)
+    return loss, {'loss': loss, 'color_loss': currentLoss, 'next_loss': newLoss, 'predictor_loss': predictorLoss, 'error_loss': curErrLoss, 'next_error_loss': newErrLoss}
+
+  def compute_infer(self, input, spp_pass=None, rel_budget=1.0, **_):
+    if spp_pass is not None:
+      assert input.shape[1] == 9
+      input = concat(input, torch.log2(spp_pass))
+    color, error, sampleMap = self.model.infer(input, relBudget=rel_budget)
+    return self.tonemapInverse(color), error
+
 
 class ErrPredDriver:
   def __init__(self, cfg, device):
