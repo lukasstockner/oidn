@@ -16,6 +16,7 @@ from color import *
 from result import *
 
 VAR_PROP = False
+TIMING = True
 
 # Inference function object
 class Infer(object):
@@ -146,6 +147,8 @@ def main():
       else:
         save_image(filename_prefix + format, image_srgb)
 
+  first = True
+
   with torch.no_grad():
     for group, input_names, target_name in image_sample_groups:
       # Create the output directory if it does not exist
@@ -180,14 +183,25 @@ def main():
 
         # Infer
         input = image_to_tensor(input, batch=True).to(device)
+        if TIMING:
+          if first:
+            # Dry run to initialize CUDA
+            infer(input.clone(), exposure, spp=spp)
+            first = False
+          torch.cuda.synchronize()
+          start_time = time.time()
         output = infer(input, exposure, spp=spp)
+        if TIMING:
+          torch.cuda.synchronize()
+          metric_str = f'time={time.time() - start_time:.4f}' if TIMING else ''
+        else:
+          metric_str = ''
 
         input = input[:, 0:infer.num_main_channels, ...] # keep only the main feature
         input_srgb  = transform_feature(input,  infer.main_feature, 'srgb', tonemap_exposure)
         output_srgb = transform_feature(output[:,0:3,...], infer.main_feature, 'srgb', tonemap_exposure)
 
         # Compute metrics
-        metric_str = ''
         if target_name and cfg.metric:
           for metric in cfg.metric:
             value = compare_images(output_srgb, target_srgb, metric)
