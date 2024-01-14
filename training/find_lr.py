@@ -6,6 +6,7 @@
 import time
 import numpy as np
 import torch
+import math
 import torch.nn as nn
 import torch.optim as optim
 
@@ -34,6 +35,14 @@ def main_worker(rank, cfg):
 
   # Initialize the model
   driver = get_driver(cfg, device)
+
+  if rank == 0:
+    numParams = 0
+    for name, param in driver.model.named_parameters():
+      lenParam = math.prod(param.shape)
+      print(f"Model element {name} size: {param.shape} ({lenParam})")
+      numParams += lenParam
+    print(f"Total parameter count: {numParams}")
 
   if distributed:
     driver.model = nn.parallel.DistributedDataParallel(driver.model, device_ids=[device_id])
