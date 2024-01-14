@@ -86,7 +86,9 @@ jobs:
     with:
       project: oidn
       image: oidn/rockylinux:8.6
-      cmd: scripts/build.py install --compiler gcc -D OIDN_FILTER_RT=OFF -D OIDN_FILTER_RTLIGHTMAP=OFF
+      cmd: >
+        scripts/build.py install --compiler gcc
+        -D OIDN_FILTER_RT=OFF -D OIDN_FILTER_RTLIGHTMAP=OFF -D OIDN_FILTER_RTERROR=OFF
       artifact-out: build-rockylinux8-gcc-minimal
       artifact-path: build install deps
 
@@ -200,7 +202,9 @@ jobs:
   #   with:
   #     project: oidn
   #     image: oidn-build:ubuntu20.04
-  #     cmd: scripts/build.py --compiler gcc -D OIDN_FILTER_RT=OFF -D OIDN_FILTER_RTLIGHTMAP=OFF
+  #     cmd: >
+  #       scripts/build.py --compiler gcc
+  #       -D OIDN_FILTER_RT=OFF -D OIDN_FILTER_RTLIGHTMAP=OFF -D OIDN_FILTER_RTERROR=OFF
 
   build-arch-gcc-oiio:
     secrets: inherit

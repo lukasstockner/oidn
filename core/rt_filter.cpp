@@ -16,6 +16,9 @@
   #include "weights/rt_alb.h"
   #include "weights/rt_nrm.h"
 #endif
+#if defined(OIDN_FILTER_RTERROR)
+  #include "rt_hdr_alb_nrm_err.h"
+#endif
 
 OIDN_NAMESPACE_BEGIN
 
@@ -33,6 +36,9 @@ OIDN_NAMESPACE_BEGIN
     weightsBlobs.ldr_calb_cnrm = blobs::weights::rt_ldr_calb_cnrm;
     weightsBlobs.alb           = blobs::weights::rt_alb;
     weightsBlobs.nrm           = blobs::weights::rt_nrm;
+  #endif
+  #if defined(OIDN_FILTER_RTERROR)
+    weightsBlobs.hdr_alb_nrm_err   = blobs::weights::rt_hdr_alb_nrm_err;
   #endif
   }
 
@@ -56,6 +62,8 @@ OIDN_NAMESPACE_BEGIN
       setParam(normal, image);
     else if (name == "output")
       setParam(output, image);
+    else if (name == "error")
+      setParam(error, image);
     else
       device->printWarning("unknown filter parameter or type mismatch: '" + name + "'");
 
@@ -72,6 +80,8 @@ OIDN_NAMESPACE_BEGIN
       removeParam(normal);
     else if (name == "output")
       removeParam(output);
+    else if (name == "error")
+      removeParam(error);
     else
       device->printWarning("unknown filter parameter or type mismatch: '" + name + "'");
 

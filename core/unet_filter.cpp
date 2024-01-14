@@ -182,6 +182,8 @@ OIDN_NAMESPACE_BEGIN
       {
         instance.inputProcess->setSrc(color, albedo, normal);
         instance.outputProcess->setDst(outputTemp ? outputTemp : output);
+        if (instance.errorProcess)
+          instance.errorProcess->setDst(error);
       }
 
       // Iterate over the tiles
@@ -218,6 +220,12 @@ OIDN_NAMESPACE_BEGIN
             alignOffsetH + overlapBeginH, alignOffsetW + overlapBeginW,
             h + overlapBeginH, w + overlapBeginW,
             tileH2, tileW2);
+
+          if (instance.errorProcess)
+            instance.errorProcess->setTile(
+              alignOffsetH + overlapBeginH, alignOffsetW + overlapBeginW,
+              h + overlapBeginH, w + overlapBeginW,
+              tileH2, tileW2);
 
           //printf("Tile: %d %d -> %d %d\n", w+overlapBeginW, h+overlapBeginH, w+overlapBeginW+tileW2, h+overlapBeginH+tileH2);
 
@@ -370,7 +378,19 @@ OIDN_NAMESPACE_BEGIN
     // Select the weights to use
     Data weightsBlob;
 
-    if (color)
+    if (error)
+    {
+      if (!color)
+        throw Exception(Error::InvalidOperation, "error prediction is not supported for auxiliary filtering");
+      if (!hdr)
+        throw Exception(Error::InvalidOperation, "error prediction is currently only supported for hdr mode");
+      if (!(albedo && normal))
+        throw Exception(Error::InvalidOperation, "error prediction is currently only supported with albedo and normals");
+      if (cleanAux)
+        throw Exception(Error::InvalidOperation, "error prediction is currently only supported without prefiltered features");
+      weightsBlob = weightsBlobs.hdr_alb_nrm_err;
+    }
+    else if (color)
     {
       if (!albedo && !normal)
       {
@@ -476,6 +496,29 @@ OIDN_NAMESPACE_BEGIN
 
       auto decConv0 = graph->addConv("dec_conv0", decConv1b, Activation::ReLU);
 
+      std::shared_ptr<ErrorProcess> errorProcess;
+      if (error) {
+        auto err_pool3 = graph->addTensorCopy("err_pool3", pool3);
+        auto err_upsample4 = graph->addConv("err_conv5b", encConv5a, Activation::ReLU, PostOp::Upsample);
+        auto errConv4a = graph->addConcatConv("err_conv4a", err_upsample4, err_pool3, Activation::ReLU);
+
+        auto err_pool2 = graph->addTensorCopy("err_pool2", pool2);
+        auto err_upsample3 = graph->addConv("err_conv4b", errConv4a, Activation::ReLU, PostOp::Upsample);
+        auto errConv3a = graph->addConcatConv("err_conv3a", err_upsample3, err_pool2, Activation::ReLU);
+
+        auto err_pool1 = graph->addTensorCopy("err_pool1", pool1);
+        auto err_upsample2 = graph->addConv("err_conv3b", errConv3a, Activation::ReLU, PostOp::Upsample);
+        auto errConv2a = graph->addConcatConv("err_conv2a", err_upsample2, err_pool1, Activation::ReLU);
+
+        auto err_input = graph->addTensorCopy("err_input", inputProcess);
+        auto err_upsample1 = graph->addConv("err_conv2b", errConv2a, Activation::ReLU, PostOp::Upsample);
+        auto errConv1a = graph->addConcatConv("err_conv1a", err_upsample1, err_input, Activation::ReLU);
+        auto errConv1b = graph->addConv("err_conv1b", errConv1a, Activation::ReLU);
+
+        auto errConv0 = graph->addConv("err_conv0", errConv1b, Activation::None);
+        errorProcess = graph->addErrorProcess("error", errConv0);
+      }
+
       auto outputProcess = graph->addOutputProcess("output", decConv0, transferFunc, hdr, snorm);
 
       // Check whether all operations in the graph are supported
@@ -531,6 +574,7 @@ OIDN_NAMESPACE_BEGIN
 
       instance.inputProcess  = inputProcess;
       instance.outputProcess = outputProcess;
+      instance.errorProcess = errorProcess;
     }
 
     // Finalize the global operations
@@ -559,6 +603,7 @@ OIDN_NAMESPACE_BEGIN
       instance.graph->clear();
       instance.inputProcess.reset();
       instance.outputProcess.reset();
+      instance.errorProcess.reset();
     }
 
     autoexposure.reset();

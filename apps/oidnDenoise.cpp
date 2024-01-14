@@ -28,6 +28,7 @@ void printUsage()
             << "                   [--alb albedo.pfm] [--nrm normal.pfm] [--clean_aux]" << std::endl
             << "                   [--is/--input_scale value]" << std::endl
             << "                   [-o/--output output.pfm] [-r/--ref reference_output.pfm]" << std::endl
+            << "                   [-e/--error error_output.pfm]" << std::endl
             << "                   [-t/--type float|half]" << std::endl
             << "                   [-q/--quality default|h|high|b|balanced]" << std::endl
             << "                   [-w/--weights weights.tza]" << std::endl
@@ -80,7 +81,7 @@ int main(int argc, char* argv[])
   PhysicalDeviceRef physicalDevice;
   std::string filterType = "RT";
   std::string colorFilename, albedoFilename, normalFilename;
-  std::string outputFilename, refFilename;
+  std::string outputFilename, refFilename, errorFilename;
   std::string weightsFilename;
   Quality quality = Quality::Default;
   bool hdr = false;
@@ -144,6 +145,8 @@ int main(int argc, char* argv[])
         outputFilename = args.getNextValue();
       else if (opt == "r" || opt == "ref" || opt == "reference")
         refFilename = args.getNextValue();
+      else if (opt == "e" || opt == "error")
+        errorFilename = args.getNextValue();
       else if (opt == "is" || opt == "input_scale" || opt == "input-scale" || opt == "inputScale" || opt == "inputscale")
         inputScale = args.getNextValue<float>();
       else if (opt == "clean_aux" || opt == "clean-aux" || opt == "cleanAux" || opt == "cleanaux")
@@ -285,6 +288,12 @@ int main(int argc, char* argv[])
     if (inplace && numRuns > 1)
       inputCopy = input->clone();
 
+    // Initialize the error image, if requested
+    std::shared_ptr<ImageBuffer> error;
+    if (!errorFilename.empty()) {
+      error = std::make_shared<ImageBuffer>(device, width, height, 1, input->getDataType());
+    }
+
     // Load the filter weights if specified
     std::vector<char> weights;
     if (!weightsFilename.empty())
@@ -307,6 +316,8 @@ int main(int argc, char* argv[])
       filter.setImage("normal", normal->getBuffer(), normal->getFormat(), normal->getW(), normal->getH());
 
     filter.setImage("output", output->getBuffer(), output->getFormat(), output->getW(), output->getH());
+    if (error)
+      filter.setImage("error", error->getBuffer(), error->getFormat(), error->getW(), error->getH());
 
     if (filterType == "RT")
     {
@@ -426,6 +437,13 @@ int main(int argc, char* argv[])
       // Save output image
       std::cout << "Saving output" << std::endl;
       saveImage(outputFilename, *output, srgb);
+    }
+
+    if (!errorFilename.empty())
+    {
+      // Save error image
+      std::cout << "Saving error" << std::endl;
+      saveImage(errorFilename, *error, srgb);
     }
   }
   catch (const std::exception& e)

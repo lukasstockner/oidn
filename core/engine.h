@@ -18,18 +18,22 @@ OIDN_NAMESPACE_BEGIN
   struct ConcatConvDesc;
   struct PoolDesc;
   struct UpsampleDesc;
+  struct TensorCopyDesc;
   struct InputProcessDesc;
   struct OutputProcessDesc;
+  struct ErrorProcessDesc;
 
   enum class PostOp;
   class Conv;
   class ConcatConv;
   class Pool;
   class Upsample;
+  class TensorCopy;
   class Autoexposure;
   class TransferFunction;
   class InputProcess;
   class OutputProcess;
+  class ErrorProcess;
   class ImageCopy;
 
   class ScratchBuffer;
@@ -66,9 +70,11 @@ OIDN_NAMESPACE_BEGIN
     virtual std::shared_ptr<Conv> newConv(const ConvDesc& desc) = 0;
     virtual std::shared_ptr<Pool> newPool(const PoolDesc& desc) = 0;
     virtual std::shared_ptr<Upsample> newUpsample(const UpsampleDesc& desc) = 0;
+    virtual std::shared_ptr<TensorCopy> newTensorCopy(const TensorCopyDesc& desc) = 0;
     virtual std::shared_ptr<Autoexposure> newAutoexposure(const ImageDesc& srcDesc) = 0;
     virtual std::shared_ptr<InputProcess> newInputProcess(const InputProcessDesc& desc) = 0;
     virtual std::shared_ptr<OutputProcess> newOutputProcess(const OutputProcessDesc& desc) = 0;
+    virtual std::shared_ptr<ErrorProcess> newErrorProcess(const ErrorProcessDesc& desc) = 0;
     virtual std::shared_ptr<ImageCopy> newImageCopy() = 0;
 
     // Unified shared memory (USM)

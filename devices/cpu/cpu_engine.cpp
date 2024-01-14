@@ -7,7 +7,9 @@
 #include "cpu_autoexposure.h"
 #include "cpu_input_process.h"
 #include "cpu_output_process.h"
+#include "cpu_error_process.h"
 #include "cpu_image_copy.h"
+#include "cpu_tensor_copy.h"
 
 OIDN_NAMESPACE_BEGIN
 
@@ -33,6 +35,11 @@ OIDN_NAMESPACE_BEGIN
     return std::make_shared<CPUUpsample>(this, desc);
   }
 
+  std::shared_ptr<TensorCopy> CPUEngine::newTensorCopy(const TensorCopyDesc& desc)
+  {
+    return std::make_shared<CPUTensorCopy>(this, desc);
+  }
+
   std::shared_ptr<Autoexposure> CPUEngine::newAutoexposure(const ImageDesc& srcDesc)
   {
     return std::make_shared<CPUAutoexposure>(this, srcDesc);
@@ -46,6 +53,11 @@ OIDN_NAMESPACE_BEGIN
   std::shared_ptr<OutputProcess> CPUEngine::newOutputProcess(const OutputProcessDesc& desc)
   {
     return std::make_shared<CPUOutputProcess>(this, desc);
+  }
+
+  std::shared_ptr<ErrorProcess> CPUEngine::newErrorProcess(const ErrorProcessDesc& desc)
+  {
+    return std::make_shared<CPUErrorProcess>(this, desc);
   }
 
   std::shared_ptr<ImageCopy> CPUEngine::newImageCopy()

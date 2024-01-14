@@ -6,8 +6,10 @@ include(ExternalProject)
 set(OIDN_GPU_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/gpu/gpu_autoexposure.h
   ${CMAKE_CURRENT_SOURCE_DIR}/gpu/gpu_image_copy.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/gpu/gpu_tensor_copy.h
   ${CMAKE_CURRENT_SOURCE_DIR}/gpu/gpu_input_process.h
   ${CMAKE_CURRENT_SOURCE_DIR}/gpu/gpu_output_process.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/gpu/gpu_error_process.h
   ${CMAKE_CURRENT_SOURCE_DIR}/gpu/gpu_pool.h
   ${CMAKE_CURRENT_SOURCE_DIR}/gpu/gpu_upsample.h
 )

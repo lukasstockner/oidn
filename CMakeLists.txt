@@ -36,6 +36,7 @@ endif()
 # Filters
 option(OIDN_FILTER_RT "Include trained weights of the RT filter." ON)
 option(OIDN_FILTER_RTLIGHTMAP "Include trained weights of the RTLightmap filter." ON)
+option(OIDN_FILTER_RTERROR "Include trained weights of the RTError filter." ON)
 
 # Install
 option(OIDN_INSTALL_DEPENDENCIES "Install Open Image Denoise dependencies." OFF)
@@ -62,6 +63,12 @@ if(OIDN_FILTER_RT)
     weights/rt_ldr_alb_nrm.tza
     weights/rt_ldr_calb_cnrm.tza
     weights/rt_nrm.tza
+  )
+endif()
+
+if(OIDN_FILTER_RTERROR)
+  list(APPEND OIDN_WEIGHTS
+    rt_hdr_alb_nrm_err.tza
   )
 endif()
 

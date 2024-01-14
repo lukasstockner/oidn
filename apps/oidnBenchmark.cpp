@@ -53,13 +53,13 @@ struct Benchmark
 {
   std::string name;
   std::string filter;
-  std::vector<std::string> inputs;
+  std::vector<std::string> component;
   int width;
   int height;
 
-  bool hasInput(const std::string& input) const
+  bool hasComponent(const std::string& input) const
   {
-    return std::find(inputs.begin(), inputs.end(), input) != inputs.end();
+    return std::find(component.begin(), component.end(), input) != component.end();
   }
 };
 
@@ -67,29 +67,29 @@ struct Benchmark
 std::vector<Benchmark> benchmarks;
 
 // Adds a benchmark to the list
-void addBenchmark(const std::string& filter, const std::vector<std::string>& inputs, const std::pair<int, int>& size)
+void addBenchmark(const std::string& filter, const std::vector<std::string>& component, const std::pair<int, int>& size)
 {
   Benchmark bench;
   bench.name = filter;
   bench.name += ".";
-  for (size_t i = 0; i < inputs.size(); ++i)
+  for (size_t i = 0; i < component.size(); ++i)
   {
     if (i > 0) bench.name += "_";
-    bench.name += inputs[i];
+    bench.name += component[i];
   }
   bench.name += "." + toString(size.first) + "x" + toString(size.second);
 
   bench.filter = filter;
-  bench.inputs = inputs;
+  bench.component = component;
   bench.width  = size.first;
   bench.height = size.second;
 
   benchmarks.push_back(bench);
 }
 
-std::shared_ptr<ImageBuffer> newImage(DeviceRef& device, int width, int height)
+std::shared_ptr<ImageBuffer> newImage(DeviceRef& device, int width, int height, int channels = 3)
 {
-  return std::make_shared<ImageBuffer>(device, width, height, 3, dataType, bufferStorage, bufferCopy);
+  return std::make_shared<ImageBuffer>(device, width, height, channels, dataType, bufferStorage, bufferCopy);
 }
 
 // Initializes an image with random values
@@ -112,7 +112,7 @@ double runBenchmark(DeviceRef& device, const Benchmark& bench)
   std::shared_ptr<ImageBuffer> input;
 
   std::shared_ptr<ImageBuffer> albedo;
-  if (bench.hasInput("alb"))
+  if (bench.hasComponent("alb"))
   {
     input = albedo = newImage(device, bench.width, bench.height);
     initImage(*albedo, rng, 0.f, 1.f);
@@ -120,7 +120,7 @@ double runBenchmark(DeviceRef& device, const Benchmark& bench)
   }
 
   std::shared_ptr<ImageBuffer> normal;
-  if (bench.hasInput("nrm"))
+  if (bench.hasComponent("nrm"))
   {
     input = normal = newImage(device, bench.width, bench.height);
     initImage(*normal, rng, -1.f, 1.f);
@@ -128,7 +128,7 @@ double runBenchmark(DeviceRef& device, const Benchmark& bench)
   }
 
   std::shared_ptr<ImageBuffer> color;
-  if (bench.hasInput("hdr"))
+  if (bench.hasComponent("hdr"))
   {
     input = color = newImage(device, bench.width, bench.height);
     initImage(*color, rng, 0.f, 100.f);
@@ -136,7 +136,7 @@ double runBenchmark(DeviceRef& device, const Benchmark& bench)
     if (bench.filter != "RTLightmap")
       filter.set("hdr", true);
   }
-  else if (bench.hasInput("ldr"))
+  else if (bench.hasComponent("ldr"))
   {
     input = color = newImage(device, bench.width, bench.height);
     initImage(*color, rng, 0.f, 1.f);
@@ -150,6 +150,13 @@ double runBenchmark(DeviceRef& device, const Benchmark& bench)
   else
     output = newImage(device, bench.width, bench.height);
   filter.setImage("output", output->getBuffer(), output->getFormat(), bench.width, bench.height);
+
+  std::shared_ptr<ImageBuffer> error;
+  if (bench.hasComponent("err"))
+  {
+    error = newImage(device, bench.width, bench.height, 1);
+    filter.setImage("error", error->getBuffer(), error->getFormat(), bench.width, bench.height);
+  }
 
   if (quality != Quality::Default)
     filter.set("quality", quality);
@@ -241,6 +248,9 @@ void addAllBenchmarks()
   {
     addBenchmark("RT", {"hdr", "alb", "nrm"}, size);
     addBenchmark("RT", {"ldr", "alb", "nrm"}, size);
+#if defined(OIDN_FILTER_RTERROR)
+    addBenchmark("RT", {"hdr", "alb", "nrm", "err"}, size);
+#endif
   }
 #endif
 

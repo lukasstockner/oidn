@@ -54,6 +54,23 @@ OIDN_NAMESPACE_BEGIN
     return op;
   }
 
+  std::shared_ptr<ErrorProcess> GenericGraph::addErrorProcess(const std::string& name,
+                                                              const std::shared_ptr<Op>& srcOp)
+  {
+    TensorAlloc* srcAlloc = tensorAllocsByOp[srcOp.get()];
+    const TensorDesc srcDesc = srcAlloc->desc;
+    auto op = engine->newErrorProcess({srcDesc});
+    op->setName(name);
+    addOp(op, {srcOp});
+
+    lazyInits.push_back([=]()
+    {
+      op->setSrc(srcAlloc->tensor);
+    });
+
+    return op;
+  }
+
   std::shared_ptr<Op> GenericGraph::addConv(const std::string& name,
                                             const std::shared_ptr<Op>& srcOp,
                                             Activation activation,
@@ -251,6 +268,24 @@ OIDN_NAMESPACE_BEGIN
     TensorAlloc* srcAlloc = tensorAllocsByOp[srcOp.get()];
     const TensorDesc srcDesc = srcAlloc->desc;
     auto op = engine->newUpsample({srcDesc});
+    op->setName(name);
+    TensorAlloc* dstAlloc = addOp(op, {srcOp}, op->getDstDesc());
+
+    lazyInits.push_back([=]()
+    {
+      op->setSrc(srcAlloc->tensor);
+      op->setDst(dstAlloc->tensor);
+    });
+
+    return op;
+  }
+
+  std::shared_ptr<Op> GenericGraph::addTensorCopy(const std::string& name,
+                                                  const std::shared_ptr<Op>& srcOp)
+  {
+    TensorAlloc* srcAlloc = tensorAllocsByOp[srcOp.get()];
+    const TensorDesc srcDesc = srcAlloc->desc;
+    auto op = engine->newTensorCopy({srcDesc});
     op->setName(name);
     TensorAlloc* dstAlloc = addOp(op, {srcOp}, op->getDstDesc());
 

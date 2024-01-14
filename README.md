@@ -409,6 +409,9 @@ CMake:
   - `OIDN_FILTER_RTLIGHTMAP`: Include the trained weights of the
     `RTLightmap` filter in the build (ON by default).
 
+  - `OIDN_FILTER_RTERROR`: Include the trained weights for error
+    prediction with the `RT` filter in the build (ON by default).
+
   - `OIDN_APPS`: Enable building example and test applications (ON by
     default).
 

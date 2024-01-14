@@ -32,6 +32,8 @@ set(OIDN_CPU_SOURCES
   cpu_device.cpp
   cpu_engine.h
   cpu_engine.cpp
+  cpu_error_process.h
+  cpu_error_process.cpp
   cpu_image_copy.h
   cpu_image_copy.cpp
   cpu_input_process.h
@@ -43,12 +45,15 @@ set(OIDN_CPU_SOURCES
   cpu_pool.cpp
   cpu_upsample.h
   cpu_upsample.cpp
+  cpu_tensor_copy.h
+  cpu_tensor_copy.cpp
   tasking.h
   tasking.cpp
 )
 
 set(CPU_SOURCES_ISPC
   cpu_autoexposure.ispc
+  cpu_error_process.ispc
   cpu_image_copy.ispc
   cpu_input_process.ispc
   cpu_output_process.ispc

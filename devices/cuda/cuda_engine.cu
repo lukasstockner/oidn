@@ -7,9 +7,11 @@
 #include "../gpu/gpu_autoexposure.h"
 #include "../gpu/gpu_input_process.h"
 #include "../gpu/gpu_output_process.h"
+#include "../gpu/gpu_error_process.h"
 #include "../gpu/gpu_pool.h"
 #include "../gpu/gpu_upsample.h"
 #include "../gpu/gpu_image_copy.h"
+#include "../gpu/gpu_tensor_copy.h"
 
 OIDN_NAMESPACE_BEGIN
 
@@ -51,6 +53,11 @@ OIDN_NAMESPACE_BEGIN
     return std::make_shared<GPUUpsample<CUDAEngine, half, TensorLayout::hwc>>(this, desc);
   }
 
+  std::shared_ptr<TensorCopy> CUDAEngine::newTensorCopy(const TensorCopyDesc& desc)
+  {
+    return std::make_shared<GPUTensorCopy<CUDAEngine, half, TensorLayout::hwc>>(this, desc);
+  }
+
   std::shared_ptr<Autoexposure> CUDAEngine::newAutoexposure(const ImageDesc& srcDesc)
   {
     return std::make_shared<GPUAutoexposure<CUDAEngine, 1024>>(this, srcDesc);
@@ -64,6 +71,11 @@ OIDN_NAMESPACE_BEGIN
   std::shared_ptr<OutputProcess> CUDAEngine::newOutputProcess(const OutputProcessDesc& desc)
   {
     return std::make_shared<GPUOutputProcess<CUDAEngine, half, TensorLayout::hwc>>(this, desc);
+  }
+
+  std::shared_ptr<ErrorProcess> CUDAEngine::newErrorProcess(const ErrorProcessDesc& desc)
+  {
+    return std::make_shared<GPUErrorProcess<CUDAEngine, half, TensorLayout::hwc>>(this, desc);
   }
 
   std::shared_ptr<ImageCopy> CUDAEngine::newImageCopy()

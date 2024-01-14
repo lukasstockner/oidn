@@ -26,6 +26,8 @@ set(OIDN_CORE_SOURCES
   device.cpp
   engine.h
   engine.cpp
+  error_process.h
+  error_process.cpp
   exception.h
   exception.cpp
   filter.h
@@ -71,6 +73,8 @@ set(OIDN_CORE_SOURCES
   unet_filter.cpp
   upsample.h
   upsample.cpp
+  tensor_copy.h
+  tensor_copy.cpp
   vec.h
 )
 

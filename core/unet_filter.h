@@ -42,6 +42,7 @@ OIDN_NAMESPACE_BEGIN
     std::shared_ptr<Image> albedo;
     std::shared_ptr<Image> normal;
     std::shared_ptr<Image> output;
+    std::shared_ptr<Image> error;
 
     // Options
     static constexpr Quality defaultQuality = Quality::High;
@@ -67,6 +68,7 @@ OIDN_NAMESPACE_BEGIN
       Data dir;
       Data alb;
       Data nrm;
+      Data hdr_alb_nrm_err;
     } weightsBlobs;
     Data userWeightsBlob;
 
@@ -93,6 +95,7 @@ OIDN_NAMESPACE_BEGIN
       std::shared_ptr<Graph> graph;
       std::shared_ptr<InputProcess> inputProcess;
       std::shared_ptr<OutputProcess> outputProcess;
+      std::shared_ptr<ErrorProcess> errorProcess;
     };
 
     // Model

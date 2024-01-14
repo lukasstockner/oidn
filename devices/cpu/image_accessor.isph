@@ -65,3 +65,20 @@ inline void set3f(const uniform ImageAccessor& img, uniform int h, int w, const 
   else
     assert(0);
 }
+
+inline void set1f(const uniform ImageAccessor& img, uniform int h, int w, const float value)
+{
+  const size_t byteOffset = getByteOffset(img, h, w);
+  if (img.dataType == DataType_Float32)
+  {
+    uniform float* pixel = (uniform float*)&img.ptr[byteOffset];
+    *pixel = value;
+  }
+  else if (img.dataType == DataType_Float16)
+  {
+    uniform int16* pixel = (uniform int16*)&img.ptr[byteOffset];
+    *pixel = float_to_half(value);
+  }
+  else
+    assert(0);
+}

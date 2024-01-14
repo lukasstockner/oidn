@@ -34,6 +34,12 @@ OIDN_NAMESPACE_BEGIN
       pixel[1] = value.y;
       pixel[2] = value.z;
     }
+
+    OIDN_HOST_DEVICE_INLINE void set1(int h, int w, const float value) const
+    {
+      T* pixel = reinterpret_cast<T*>(ptr + getByteOffset(h, w));
+      *pixel = value;
+    }
   };
 
 OIDN_NAMESPACE_END

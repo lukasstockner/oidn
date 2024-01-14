@@ -3,10 +3,12 @@
 
 #include "input_process.h"
 #include "output_process.h"
+#include "error_process.h"
 #include "conv.h"
 #include "concat_conv.h"
 #include "pool.h"
 #include "upsample.h"
+#include "tensor_copy.h"
 #include "progress.h"
 
 OIDN_NAMESPACE_BEGIN
@@ -28,6 +30,9 @@ OIDN_NAMESPACE_BEGIN
                                                             bool hdr,
                                                             bool snorm) = 0;
 
+    virtual std::shared_ptr<ErrorProcess> addErrorProcess(const std::string& name,
+                                                          const std::shared_ptr<Op>& srcOp) = 0;
+
     virtual std::shared_ptr<Op> addConv(const std::string& name,
                                         const std::shared_ptr<Op>& srcOp,
                                         Activation activation,
@@ -43,6 +48,9 @@ OIDN_NAMESPACE_BEGIN
 
     virtual std::shared_ptr<Op> addUpsample(const std::string& name,
                                             const std::shared_ptr<Op>& srcOp) = 0;
+
+    virtual std::shared_ptr<Op> addTensorCopy(const std::string& name,
+                                              const std::shared_ptr<Op>& srcOp) = 0;
 
     virtual bool isSupported() const = 0;
 

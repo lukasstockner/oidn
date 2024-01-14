@@ -71,4 +71,5 @@
 #endif
 
 #cmakedefine OIDN_FILTER_RT
+#cmakedefine OIDN_FILTER_RTERROR
 #cmakedefine OIDN_FILTER_RTLIGHTMAP

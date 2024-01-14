@@ -70,9 +70,11 @@ OIDN_NAMESPACE_BEGIN
     std::shared_ptr<Conv> newConv(const ConvDesc& desc) override;
     std::shared_ptr<Pool> newPool(const PoolDesc& desc) override;
     std::shared_ptr<Upsample> newUpsample(const UpsampleDesc& desc) override;
+    std::shared_ptr<TensorCopy> newTensorCopy(const TensorCopyDesc& desc) override;
     std::shared_ptr<Autoexposure> newAutoexposure(const ImageDesc& srcDesc) override;
     std::shared_ptr<InputProcess> newInputProcess(const InputProcessDesc& desc) override;
     std::shared_ptr<OutputProcess> newOutputProcess(const OutputProcessDesc& desc) override;
+    std::shared_ptr<ErrorProcess> newErrorProcess(const ErrorProcessDesc& desc) override;
     std::shared_ptr<ImageCopy> newImageCopy() override;
 
     // Unified shared memory (USM)

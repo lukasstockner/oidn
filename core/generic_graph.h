@@ -28,6 +28,9 @@ OIDN_NAMESPACE_BEGIN
                                                     bool hdr,
                                                     bool snorm) override;
 
+    std::shared_ptr<ErrorProcess> addErrorProcess(const std::string& name,
+                                                  const std::shared_ptr<Op>& srcOp) override;
+
     std::shared_ptr<Op> addConv(const std::string& name,
                                 const std::shared_ptr<Op>& srcOp,
                                 Activation activation,
@@ -43,6 +46,9 @@ OIDN_NAMESPACE_BEGIN
 
     std::shared_ptr<Op> addUpsample(const std::string& name,
                                     const std::shared_ptr<Op>& srcOp) override;
+
+    std::shared_ptr<Op> addTensorCopy(const std::string& name,
+                                      const std::shared_ptr<Op>& srcOp) override;
 
     bool isSupported() const override;
 
