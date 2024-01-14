@@ -107,7 +107,7 @@ def init_worker(rank, cfg):
 
     # Initialize the process group
     os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
+    os.environ['MASTER_PORT'] = str(12355 + cfg.device_id)
 
     dist.init_process_group(backend='nccl',
                             rank=rank, world_size=cfg.num_devices,
