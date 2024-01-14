@@ -39,18 +39,16 @@ def get_result_log_dir(result_dir):
   return os.path.join(result_dir, 'log')
 
 # Saves a training checkpoint
-def save_checkpoint(result_dir, epoch, step, model, optimizer):
+def save_checkpoint(result_dir, epoch, step, model_state, optimizer):
   checkpoint_dir = get_checkpoint_dir(result_dir)
   if not os.path.isdir(checkpoint_dir):
     os.makedirs(checkpoint_dir)
 
   checkpoint_filename = get_checkpoint_filename(result_dir, epoch)
-  torch.save({
-               'epoch': epoch,
-               'step': step,
-               'model_state': unwrap_module(model).state_dict(),
-               'optimizer_state': optimizer.state_dict(),
-             }, checkpoint_filename)
+  state = {'epoch': epoch, 'step': step, 'model_state': model_state}
+  if optimizer:
+    state['optimizer_state'] = optimizer.state_dict()
+  torch.save(state, checkpoint_filename)
 
   latest_filename = get_checkpoint_state_filename(result_dir)
   with open(latest_filename, 'w') as f:

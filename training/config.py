@@ -53,7 +53,7 @@ def parse_args(cmd=None, description=None):
 
   parser.add_argument('--config', '-c', type=str, help='load configuration from JSON file (overrides command-line arguments)')
 
-  if cmd in {'preprocess', 'train', 'find_lr'}:
+  if cmd in {'preprocess', 'train', 'find_lr', 'import'}:
     parser.add_argument('features', type=str, nargs='*',
                         choices=['hdr', 'ldr', 'sh1', 'albedo', 'alb', 'normal', 'nrm', []],
                         help='set of input features')
@@ -70,7 +70,7 @@ def parse_args(cmd=None, description=None):
                           choices=['linear', 'srgb', 'pu', 'log'],
                           help='transfer function')
 
-  if cmd in {'preprocess', 'train'}:
+  if cmd in {'preprocess', 'train', 'import'}:
     parser.add_argument('--valid_data', '-v', type=str,
                         help='name of the validation dataset')
 
@@ -78,7 +78,7 @@ def parse_args(cmd=None, description=None):
     parser.add_argument('--data_dir', '-D', type=str, default='data',
                         help='directory of datasets (e.g. training, validation, test)')
 
-  if cmd in {'train', 'find_lr', 'infer', 'export', 'visualize'}:
+  if cmd in {'train', 'find_lr', 'infer', 'export', 'import', 'visualize'}:
     parser.add_argument('--results_dir', '-R', type=str, default='results',
                         help='directory of training results')
     parser.add_argument('--result', '-r', type=str, required=(not cmd in {'train', 'find_lr'}),
@@ -88,12 +88,12 @@ def parse_args(cmd=None, description=None):
     parser.add_argument('--aux_results', '-a', type=str, nargs='*', default=[],
                         help='prefilter auxiliary features using the specified training results')
 
-  if cmd in {'train', 'infer', 'export'}:
+  if cmd in {'train', 'infer', 'export', 'import'}:
     parser.add_argument('--num_epochs', '--epochs', '-e', type=int,
-                        default=(2000 if cmd == 'train' else None),
+                        default=(2000 if cmd in ['train', 'import'] else None),
                         help='number of training epochs')
 
-  if cmd in {'train'}:
+  if cmd in {'train', 'import'}:
     parser.add_argument('--num_valid_epochs', '--valid_epochs', type=int, default=10,
                         help='perform validation every this many epochs')
     parser.add_argument('--num_save_epochs', '--save_epochs', type=int, default=10,
@@ -111,7 +111,7 @@ def parse_args(cmd=None, description=None):
     parser.add_argument('--max_lr', '--max_learning_rate', type=float, default=0.1,
                         help='maximum learning rate')
 
-  if cmd in {'train', 'find_lr'}:
+  if cmd in {'train', 'find_lr', 'import'}:
     parser.add_argument('--batch_size', '--bs', '-b', type=int, default=16,
                         help='mini-batch size (total batch size of all devices)')
     parser.add_argument('--num_loaders', '--loaders', '-j', type=int, default=4,
@@ -154,6 +154,10 @@ def parse_args(cmd=None, description=None):
                         help='what to export')
     parser.add_argument('--output', '-o', type=str,
                         help='output file')
+
+  if cmd in {'import'}:
+    parser.add_argument('--input', '-i', type=str,
+                        help='input weights TZA')
 
   if cmd in {'convert_image', 'split_exr'}:
     parser.add_argument('input', type=str,

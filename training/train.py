@@ -270,7 +270,7 @@ def main_worker(rank, cfg):
 
     if (rank == 0) and ((cfg.num_save_epochs > 0 and epoch % cfg.num_save_epochs == 0) or epoch == cfg.num_epochs):
       # Save a checkpoint
-      save_checkpoint(result_dir, epoch, step, model, optimizer)
+      save_checkpoint(result_dir, epoch, step, unwrap_module(model).state_dict(), optimizer)
 
   # Print final stats
   if rank == 0:
