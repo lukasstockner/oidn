@@ -5,6 +5,7 @@ import os
 import numpy as np
 import torch
 import OpenImageIO as oiio
+from collections import defaultdict
 
 from ssim import ssim, ms_ssim
 from flip import LDRFLIPLoss
@@ -30,6 +31,15 @@ def tensor_to_image(image):
     image = image.squeeze(0)
   # Reorder from CHW to HWC
   return image.cpu().numpy().transpose((1, 2, 0))
+
+def scale_image(input, scale):
+  if scale == 1:
+    return input.copy()
+  w, h, c = input.shape
+  # Crop to multiple of size
+  input = input[0:(w - w % scale), 0:(h - h % scale), :]
+  # Scale
+  return input.reshape((w//scale, scale, h//scale, scale, c)).mean(axis=3).mean(axis=1)
 
 # Computes gradient for a tensor
 def tensor_gradient(input):
@@ -57,6 +67,82 @@ def compare_images(a, b, metric='psnr'):
 ## -----------------------------------------------------------------------------
 ## Image I/O
 ## -----------------------------------------------------------------------------
+
+def image_get_features(name):
+  image = oiio.ImageBuf(name)
+  if image.has_error:
+    error('could not load image')
+
+  # Get the channels and group them by layer
+  channels = image.spec().channelnames
+  layer_channels = defaultdict(set)
+  for channel in channels:
+    if len(channel.split('.')) >= 3:
+      layer, p, c = channel.rsplit('.', 2)
+      layer_channels[layer].add(f'{p}.{c}')
+    else:
+      layer_channels[None].add(channel)
+  for rem in ('Composite', 'BackLight'):
+    if rem in layer_channels:
+      del layer_channels[rem]
+
+  # Set default layer
+  layer = list(layer_channels.keys())[0] if len(layer_channels) == 1 else None
+
+  # Extract features
+  FEATURES = {
+    'hdr' : [
+              ('R', 'G', 'B'),
+              ('Noisy Image.R', 'Noisy Image.G', 'Noisy Image.B'),
+              ('Combined.R', 'Combined.G', 'Combined.B'),
+              ('Beauty.R', 'Beauty.G', 'Beauty.B')
+            ],
+    'a' : [('A',)],
+    'alb' : [
+              ('albedo.R', 'albedo.G', 'albedo.B'),
+              ('Denoising Albedo.R', 'Denoising Albedo.G', 'Denoising Albedo.B'),
+              ('VisibleDiffuse.R', 'VisibleDiffuse.G', 'VisibleDiffuse.B'),
+              ('diffuse.R', 'diffuse.G', 'diffuse.B'),
+              ('DiffCol.R', 'DiffCol.G', 'DiffCol.B'),
+            ],
+    'nrm' : [
+              ('normal.R', 'normal.G', 'normal.B'),
+              ('normal.X', 'normal.Y', 'normal.Z'),
+              ('N.R', 'N.G', 'N.B'),
+              ('Denoising Normal.X', 'Denoising Normal.Y', 'Denoising Normal.Z'),
+              ('Normals.R', 'Normals.G', 'Normals.B'),
+              ('VisibleNormals.R', 'VisibleNormals.G', 'VisibleNormals.B'),
+              ('OptixNormals.R', 'OptixNormals.G', 'OptixNormals.B'),
+            ],
+    'z' : [('Denoising Depth.Z',)],
+  }
+
+  present_features = {}
+  for feature, feature_channel_lists in FEATURES.items():
+    for feature_channels in feature_channel_lists:
+      # Check whether the feature is present in the selected layer of the image
+      if layer:
+        feature_channels = tuple([layer + '.' + f for f in feature_channels])
+      if set(feature_channels).issubset(channels):
+        present_features[feature] = [channels.index(channel) for channel in feature_channels]
+        break
+
+  return present_features
+
+def load_image_multilayer(filename, features):
+  input = oiio.ImageInput.open(filename)
+  if not input:
+    raise RuntimeError('could not open image: "' + filename + '"')
+
+  data = {}
+  for feature, channels in features.items():
+    pixels = [input.read_image(subimage=0, miplevel=0, chbegin=channel, chend=channel + 1, format=oiio.FLOAT) for channel in channels]
+    if any(ch is None for ch in pixels):
+      raise RuntimeError('could not read image')
+    data[feature] = np.nan_to_num(np.concatenate(pixels, axis=2))
+
+  input.close()
+  return data
 
 # Loads an image and returns it as a float NumPy array
 def load_image(filename, num_channels=None):

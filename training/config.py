@@ -66,9 +66,6 @@ def parse_args(cmd=None, description=None):
                         help='directory of preprocessed datasets')
     parser.add_argument('--train_data', '-t', type=str,
                         help='name of the training dataset')
-    advanced.add_argument('--transfer', '-x', type=str,
-                          choices=['linear', 'srgb', 'pu', 'log'],
-                          help='transfer function')
 
   if cmd in {'preprocess', 'train', 'import'}:
     parser.add_argument('--valid_data', '-v', type=str,
