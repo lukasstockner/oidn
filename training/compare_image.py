@@ -16,13 +16,18 @@ def main():
   cfg = parse_args(description='Compares two feature images using the specified quality metrics.')
 
   # Load the images
-  image1 = load_image(cfg.input[0], num_channels=3)
-  image2 = load_image(cfg.input[1], num_channels=3)
+  if cfg.feature:
+    feature1 = feature2 = cfg.feature
+    image1 = load_image_features(cfg.input[0], [feature1])
+    image2 = load_image_features(cfg.input[1], [feature2])
+  else:
+    image1 = load_image(cfg.input[0], num_channels=3)
+    image2 = load_image(cfg.input[1], num_channels=3)
 
-  feature1 = get_image_feature(cfg.input[0])
-  feature2 = get_image_feature(cfg.input[1])
-  if feature1 != feature2:
-    error('cannot compare different features')
+    feature1 = get_image_feature(cfg.input[0])
+    feature2 = get_image_feature(cfg.input[1])
+    if feature1 != feature2:
+      error('cannot compare different features')
 
   # Load metadata for the images if it exists
   tonemap_exposure = cfg.exposure
@@ -30,6 +35,9 @@ def main():
     metadata = load_image_metadata(os.path.commonprefix(cfg.input))
     if metadata:
       tonemap_exposure = metadata['exposure']
+
+  if tonemap_exposure == 0.0:
+    tonemap_exposure = autoexposure(image2)
 
   # Convert the images to tensors
   image1 = image_to_tensor(image1, batch=True)

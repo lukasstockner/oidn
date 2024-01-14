@@ -166,6 +166,7 @@ def parse_args(cmd=None, description=None):
   if cmd in {'compare_image'}:
     parser.add_argument('input', type=str, nargs=2,
                         help='input images')
+    parser.add_argument('--feature', type=str, default='', help='feature to compare')
 
   if cmd in {'convert_image'}:
     parser.add_argument('output', type=str,
