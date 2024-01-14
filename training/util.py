@@ -136,6 +136,7 @@ def init_device(cfg, id=0):
     if cfg.deterministic:
       torch.backends.cudnn.benchmark = False
       torch.backends.cudnn.deterministic = True
+      torch.manual_seed(42)
     else:
       torch.backends.cudnn.benchmark = True # higher performance
 
