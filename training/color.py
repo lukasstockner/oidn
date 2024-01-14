@@ -12,6 +12,9 @@ HDR_Y_MAX = 65504. # maximum HDR value
 def luminance(r, g, b):
   return 0.212671 * r + 0.715160 * g + 0.072169 * b
 
+def channel_mean(x):
+  return x.mean(1, keepdim=True)
+
 ## -----------------------------------------------------------------------------
 ## Transfer function
 ## -----------------------------------------------------------------------------
@@ -192,3 +195,13 @@ def tonemap(x):
     return ((x*(A*x+C*B)+D*E)/(x*(A*x+B)+D*F))-E/F
 
   return torch.clamp(eval(x * scale) / eval(W), max=1.)
+
+# Propagate error term through tonemapping function.
+# TODO: Should probably use derivative through autodiff.
+def tonemap_transfer(func, x, dx):
+  assert len(dx.shape) == 4
+  fx = func(x)
+  fdx = func(x + dx) - fx
+  if dx.shape[1] == 1:
+    fdx = channel_mean(fdx)
+  return fx, fdx
