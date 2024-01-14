@@ -58,10 +58,10 @@ def main_worker(rank, cfg):
   else:
     error('no training images')
   train_loader, _ = get_data_loader(rank, cfg, train_data, shuffle=True)
-  train_steps_per_epoch = len(train_loader)
+  train_steps = cfg.num_epochs * len(train_loader)
 
   # Initialize the learning rate scheduler
-  gamma = (cfg.max_lr / cfg.lr) ** (1. / (train_steps_per_epoch-1))
+  gamma = (cfg.max_lr / cfg.lr) ** (1. / (train_steps-1))
   lr_scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
 
   # Training loop
@@ -72,49 +72,50 @@ def main_worker(rank, cfg):
   if rank == 0:
     print()
     start_time = time.time()
-    progress = ProgressBar(train_steps_per_epoch, 'Train')
+    progress = ProgressBar(train_steps, 'Train')
     result = [['learning_rate', 'smoothed_loss', 'loss']]
 
   # Switch to training mode
   driver.model.train()
 
   # Iterate over the batches
-  for _, batch in enumerate(train_loader, 0):
-    # Get the batch
-    input, target = batch
-    input  = input.to(device,  non_blocking=True).float()
-    target = target.to(device, non_blocking=True).float()
+  for epoch in range(cfg.num_epochs):
+    for _, batch in enumerate(train_loader, 0):
+      # Get the batch
+      input, target = batch
+      input  = input.to(device,  non_blocking=True).float()
+      target = target.to(device, non_blocking=True).float()
 
-    # Run a training step
-    optimizer.zero_grad()
-    loss, _ = driver.compute_losses(input=input, target=target, epoch=1, valid=False)
-    loss.backward()
+      # Run a training step
+      optimizer.zero_grad()
+      loss, _ = driver.compute_losses(input=input, target=target, epoch=epoch, valid=False)
+      loss.backward()
 
-    # Get the loss
-    # In distributed mode we have to do a reduction, which is very expensive
-    if distributed:
-      dist.all_reduce(loss, op=dist.ReduceOp.SUM)
-    cur_loss = loss.item() / cfg.num_devices
+      # Get the loss
+      # In distributed mode we have to do a reduction, which is very expensive
+      if distributed:
+        dist.all_reduce(loss, op=dist.ReduceOp.SUM)
+      cur_loss = loss.item() / cfg.num_devices
 
-    # Compute the smoothed loss
-    avg_loss = beta * avg_loss + (1 - beta) * cur_loss
-    smoothed_loss = avg_loss / (1 - beta ** (step+1))
-    if smoothed_loss < best_loss:
-      best_loss = smoothed_loss
-    elif smoothed_loss > 4 * best_loss:
-      break
+      # Compute the smoothed loss
+      avg_loss = beta * avg_loss + (1 - beta) * cur_loss
+      smoothed_loss = avg_loss / (1 - beta ** (step+1))
+      if smoothed_loss < best_loss:
+        best_loss = smoothed_loss
+      elif smoothed_loss > 4 * best_loss:
+        break
 
-    # Record result
-    if rank == 0:
-      lr = lr_scheduler.get_last_lr()[0]
-      result.append([lr, smoothed_loss, cur_loss])
+      # Record result
+      if rank == 0:
+        lr = lr_scheduler.get_last_lr()[0]
+        result.append([lr, smoothed_loss, cur_loss])
 
-    # Next step
-    optimizer.step()
-    lr_scheduler.step()
-    step += 1
-    if rank == 0:
-      progress.next()
+      # Next step
+      optimizer.step()
+      lr_scheduler.step()
+      step += 1
+      if rank == 0:
+        progress.next()
 
   # Print stats
   if rank == 0:

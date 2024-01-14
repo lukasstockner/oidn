@@ -107,6 +107,7 @@ def parse_args(cmd=None, description=None):
                         help='minimum learning rate')
     parser.add_argument('--max_lr', '--max_learning_rate', type=float, default=0.1,
                         help='maximum learning rate')
+    parser.add_argument('--num_epochs', '--epochs', '-e', type=int, default=1, help='number of training epochs')
 
   if cmd in {'train', 'find_lr', 'import'}:
     parser.add_argument('--batch_size', '--bs', '-b', type=int, default=16,
