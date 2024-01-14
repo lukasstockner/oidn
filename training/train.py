@@ -44,17 +44,12 @@ def main_worker(rank, cfg):
   device = init_device(cfg, id=device_id)
 
   # Initialize the model
-  model = get_model(cfg)
-  model.to(device)
+  driver = get_driver(cfg, device)
   if distributed:
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[device_id])
-
-  # Initialize the loss function
-  criterion = get_loss_function(cfg)
-  criterion.to(device)
+    driver.model = nn.parallel.DistributedDataParallel(driver.model, device_ids=[device_id])
 
   # Initialize the optimizer
-  optimizer = optim.Adam(model.parameters(), lr=1)
+  optimizer = optim.Adam(driver.model.parameters(), lr=1)
 
   # Check whether the result already exists
   result_dir = get_result_dir(cfg)
@@ -76,7 +71,7 @@ def main_worker(rank, cfg):
 
     # Restore the latest checkpoint
     last_epoch = get_latest_checkpoint_epoch(result_dir)
-    checkpoint = load_checkpoint(result_dir, device, last_epoch, model, optimizer)
+    checkpoint = load_checkpoint(result_dir, device, last_epoch, driver.model, optimizer)
     step = checkpoint['step']
   else:
     if rank == 0:
@@ -165,8 +160,8 @@ def main_worker(rank, cfg):
       progress = ProgressBar(train_steps_per_epoch, progress_format % ('Train', epoch))
 
     # Switch to training mode
-    model.train()
-    train_loss = 0.
+    driver.model.train()
+    train_loss = defaultdict(lambda: 0.)
 
     # Iterate over the batches
     if distributed:
@@ -185,8 +180,7 @@ def main_worker(rank, cfg):
       optimizer.zero_grad()
 
       with amp.autocast(enabled=amp_enabled):
-        output = model(input)
-        loss = criterion(output, target)
+        loss, loss_info = driver.compute_losses(input=input, target=target, epoch=epoch, valid=False)
 
       if amp_enabled:
         scaler.scale(loss).backward()
@@ -198,7 +192,8 @@ def main_worker(rank, cfg):
 
       # Next step
       step += 1
-      train_loss += loss
+      for k, v in loss_info.items():
+        train_loss[k] += v
       if rank == 0:
         progress.next()
 
@@ -208,13 +203,16 @@ def main_worker(rank, cfg):
 
     # Compute the average training loss
     if distributed:
-      dist.all_reduce(train_loss, op=dist.ReduceOp.SUM)
-    train_loss = train_loss.item() / (train_steps_per_epoch * cfg.num_devices)
+      for v in train_loss.values():
+        dist.all_reduce(v, op=dist.ReduceOp.SUM)
+    for k, v in train_loss.items():
+      train_loss[k] = v.item() / (train_steps_per_epoch * cfg.num_devices)
 
     # Write summary
     if rank == 0:
       summary_writer.add_scalar('learning_rate', lr, epoch)
-      summary_writer.add_scalar('loss', train_loss, epoch)
+      for k, v in train_loss.items():
+        summary_writer.add_scalar(k, v, epoch)
 
     # Print stats
     if rank == 0:
@@ -222,8 +220,9 @@ def main_worker(rank, cfg):
       total_duration = time.time() - total_start_time
       images_per_sec = len(train_data) / duration
       eta = ((cfg.num_epochs - epoch) * total_duration / (epoch + 1 - start_epoch))
-      progress.finish('loss=%.6f, lr=%.6f (%.1f images/s, %s, eta %s)'
-                      % (train_loss, lr, images_per_sec, format_time(duration), format_time(eta, precision=2)))
+      loss_string = ', '.join(f'{k}={v:.6}' for k, v in train_loss.items())
+      progress.finish('%s, lr=%.6f (%.1f images/s, %s, eta %s)'
+                      % (loss_string, lr, images_per_sec, format_time(duration), format_time(eta, precision=2)))
 
     if ((cfg.num_valid_epochs > 0 and epoch % cfg.num_valid_epochs == 0) or epoch == cfg.num_epochs) \
       and len(valid_data) > 0:
@@ -233,8 +232,8 @@ def main_worker(rank, cfg):
         progress = ProgressBar(valid_steps_per_epoch, progress_format % ('Valid', epoch))
 
       # Switch to evaluation mode
-      model.eval()
-      valid_loss = 0.
+      driver.model.eval()
+      valid_loss = defaultdict(lambda: 0.)
 
       # Iterate over the batches
       with torch.no_grad():
@@ -245,32 +244,37 @@ def main_worker(rank, cfg):
           target = target.to(device, non_blocking=True).float()
 
           # Run a validation step
-          loss = criterion(model(input), target)
+          _, loss_info = driver.compute_losses(input=input, target=target, epoch=epoch, valid=True)
 
           # Next step
-          valid_loss += loss
+          for k, v in loss_info.items():
+            valid_loss[k] += v
           if rank == 0:
             progress.next()
 
       # Compute the average validation loss
       if distributed:
-        dist.all_reduce(valid_loss, op=dist.ReduceOp.SUM)
-      valid_loss = valid_loss.item() / (valid_steps_per_epoch * cfg.num_devices)
+        for v in valid_loss.values():
+          dist.all_reduce(v, op=dist.ReduceOp.SUM)
+      for k, v in valid_loss.items():
+        valid_loss[k] = v.item() / (valid_steps_per_epoch * cfg.num_devices)
 
       # Write summary
       if rank == 0:
-        summary_writer.add_scalar('valid_loss', valid_loss, epoch)
+        for k, v in valid_loss.items():
+          summary_writer.add_scalar(f'valid_{k}', v, epoch)
 
       # Print stats
       if rank == 0:
         duration = time.time() - start_time
         images_per_sec = len(valid_data) / duration
-        progress.finish('valid_loss=%.6f (%.1f images/s, %.1fs)'
-                        % (valid_loss, images_per_sec, duration))
+        loss_string = ', '.join(f'{k}={v:.6}' for k, v in valid_loss.items())
+        progress.finish('%s (%.1f images/s, %.1fs)'
+                        % (loss_string, images_per_sec, duration))
 
     if (rank == 0) and ((cfg.num_save_epochs > 0 and epoch % cfg.num_save_epochs == 0) or epoch == cfg.num_epochs):
       # Save a checkpoint
-      save_checkpoint(result_dir, epoch, step, unwrap_module(model).state_dict(), optimizer)
+      save_checkpoint(result_dir, epoch, step, unwrap_module(driver.model).state_dict(), optimizer)
 
   # Print final stats
   if rank == 0:

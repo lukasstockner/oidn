@@ -118,6 +118,9 @@ def parse_args(cmd=None, description=None):
                         help='number of data loader threads per device')
     parser.add_argument('--precision', '-p', type=str, choices=['fp32', 'mixed'],
                         help='training precision')
+    advanced.add_argument('--transfer', '-x', type=str,
+                          choices=['linear', 'srgb', 'pu', 'log'],
+                          help='transfer function')
     advanced.add_argument('--model', '-m', type=str, choices=['unet'], default='unet',
                           help='network model')
     advanced.add_argument('--loss', '-l', type=str,
@@ -211,7 +214,7 @@ def parse_args(cmd=None, description=None):
     cfg.features = list(dict.fromkeys(cfg.features).keys())
 
     # Set the default transfer function
-    if cfg.transfer is None:
+    if 'transfer' in cfg and cfg.transfer is None:
       main_feature = get_main_feature(cfg.features)
       if main_feature == 'hdr':
         cfg.transfer = 'log' if cfg.filter == 'RTLightmap' else 'pu'

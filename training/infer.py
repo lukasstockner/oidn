@@ -31,24 +31,20 @@ class Infer(object):
     self.num_main_channels = len(get_dataset_channels(self.main_feature))
 
     # Initialize the model
-    self.model = get_model(self.result_cfg)
-    self.model.to(device)
+    self.driver = get_driver(self.result_cfg, device)
 
     # Load the checkpoint
-    checkpoint = load_checkpoint(result_dir, device, cfg.num_epochs, self.model)
+    checkpoint = load_checkpoint(result_dir, device, cfg.num_epochs, self.driver.model)
     self.epoch = checkpoint['epoch']
 
     # Infer in FP16 if the model was trained with mixed precision
     if self.result_cfg.precision == 'mixed':
-      self.model.half()
+      self.driver.model.half()
     if device.type == 'cpu':
-      self.model.float() # CPU does not support FP16, so convert it back to FP32
-
-    # Initialize the transfer function
-    self.transfer = get_transfer_function(self.result_cfg)
+      self.driver.model.float() # CPU does not support FP16, so convert it back to FP32
 
     # Set the model to evaluation mode
-    self.model.eval()
+    self.driver.model.eval()
 
     # Initialize auxiliary feature inference
     self.aux_infers = {}
@@ -63,17 +59,15 @@ class Infer(object):
   def __call__(self, input, exposure=1.):
     image = input.clone()
 
-    # Apply the transfer function
-    color = image[:, 0:self.num_main_channels, ...]
-    if self.main_feature == 'hdr':
-      color *= exposure
-    color = self.transfer.forward(color)
-    image[:, 0:self.num_main_channels, ...] = color
-
-    # Pad the output
     shape = image.shape
-    image = F.pad(image, (0, round_up(shape[3], self.model.alignment) - shape[3],
-                          0, round_up(shape[2], self.model.alignment) - shape[2]))
+    pad = lambda i: F.pad(i, (0, round_up(shape[3], self.driver.model.alignment) - shape[3],
+                              0, round_up(shape[2], self.driver.model.alignment) - shape[2]))
+    unpad = lambda i: i[:, :, :shape[2], :shape[3]]
+
+    image = pad(image)
+    color = image[:, 0:3, ...] * exposure
+    features = image[:, 3:9, ...]
+    image = concat(color, features)
 
     # Prefilter the auxiliary features
     for aux_feature, aux_infer in self.aux_infers.items():
@@ -88,25 +82,16 @@ class Infer(object):
       image = image.half()
     if self.main_feature == 'sh1':
       # Iterate over x, y, z
-      image = torch.cat([self.model(torch.cat((image[:, i:i+3, ...], image[:, 9:, ...]), 1)) for i in [0, 3, 6]], 1)
+      color = torch.cat([self.driver.compute_infer(torch.cat((image[:, i:i+3, ...], image[:, 9:, ...]), 1)) for i in [0, 3, 6]], 1)
     else:
-      image = self.model(image)
-    image = image.float()
+      color = self.driver.compute_infer(image)
 
     # Unpad the output
-    image = image[:, :, :shape[2], :shape[3]]
+    color = unpad(color).float()
 
     # Sanitize the output
-    image = torch.clamp(image, min=0.)
-
-    # Apply the inverse transfer function
-    image = self.transfer.inverse(image)
-    if self.main_feature == 'hdr':
-      image /= exposure
-    else:
-      image = torch.clamp(image, max=1.)
-        
-    return image
+    color = torch.clamp(color, min=0.) / exposure
+    return color
 
 def main():
   # Parse the command line arguments

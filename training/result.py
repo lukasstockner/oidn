@@ -54,6 +54,37 @@ def save_checkpoint(result_dir, epoch, step, model_state, optimizer):
   with open(latest_filename, 'w') as f:
     f.write('%d' % epoch)
 
+def filter_model_state(ms, mappings={}):
+  # Map old to new UNet weight names
+  unet_map = {
+    'enc_conv0': 'encoder.conv0.0',
+    'enc_conv1': 'encoder.conv0.1',
+    'enc_conv2': 'encoder.conv1',
+    'enc_conv3': 'encoder.conv2',
+    'enc_conv4': 'encoder.conv3',
+    'enc_conv5a': 'encoder.conv4',
+    'enc_conv5b': 'decoder.conv5',
+    'dec_conv4a': 'decoder.conv4.0',
+    'dec_conv4b': 'decoder.conv4.1',
+    'dec_conv3a': 'decoder.conv3.0',
+    'dec_conv3b': 'decoder.conv3.1',
+    'dec_conv2a': 'decoder.conv2.0',
+    'dec_conv2b': 'decoder.conv2.1',
+    'dec_conv1a': 'decoder.conv1.0',
+    'dec_conv1b': 'decoder.conv1.1',
+    'dec_conv0': 'decoder.conv0',
+  }
+  out = dict()
+  for k, v in ms.items():
+    if k.startswith('_orig_mod.'):
+      k = k[10:]
+    for old, new in (unet_map | mappings).items():
+      if k.startswith(old):
+        k = new + k[len(old):]
+        break
+    out[k] = v
+  return out
+
 # Loads and returns a training checkpoint
 def load_checkpoint(result_dir, device, epoch=None, model=None, optimizer=None):
   if epoch is None or epoch <= 0:
@@ -68,7 +99,7 @@ def load_checkpoint(result_dir, device, epoch=None, model=None, optimizer=None):
   if checkpoint['epoch'] != epoch:
     error('checkpoint epoch mismatch')
   if model:
-    unwrap_module(model).load_state_dict(checkpoint['model_state'])
+    unwrap_module(model).load_state_dict(filter_model_state(checkpoint['model_state']))
   if optimizer:
     optimizer.load_state_dict(checkpoint['optimizer_state'])
 

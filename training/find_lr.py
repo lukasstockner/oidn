@@ -33,17 +33,13 @@ def main_worker(rank, cfg):
   device = init_device(cfg, id=device_id)
 
   # Initialize the model
-  model = get_model(cfg)
-  model.to(device)
-  if distributed:
-    model = nn.parallel.DistributedDataParallel(model, device_ids=[device_id])
+  driver = get_driver(cfg, device)
 
-  # Initialize the loss function
-  criterion = get_loss_function(cfg)
-  criterion.to(device)
+  if distributed:
+    driver.model = nn.parallel.DistributedDataParallel(driver.model, device_ids=[device_id])
 
   # Initialize the optimizer
-  optimizer = optim.Adam(model.parameters(), lr=cfg.lr)
+  optimizer = optim.Adam(driver.model.parameters(), lr=cfg.lr)
 
   # Sync the workers
   if distributed:
@@ -80,7 +76,7 @@ def main_worker(rank, cfg):
     result = [['learning_rate', 'smoothed_loss', 'loss']]
 
   # Switch to training mode
-  model.train()
+  driver.model.train()
 
   # Iterate over the batches
   for _, batch in enumerate(train_loader, 0):
@@ -91,7 +87,7 @@ def main_worker(rank, cfg):
 
     # Run a training step
     optimizer.zero_grad()
-    loss = criterion(model(input), target)
+    loss, _ = driver.compute_losses(input=input, target=target, epoch=1, valid=False)
     loss.backward()
 
     # Get the loss
