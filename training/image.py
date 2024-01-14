@@ -115,6 +115,8 @@ def image_get_features(name):
               ('OptixNormals.R', 'OptixNormals.G', 'OptixNormals.B'),
             ],
     'z' : [('Denoising Depth.Z',)],
+    'var' : [('Denoising Variance.R', 'Denoising Variance.G', 'Denoising Variance.B')],
+    'spp' : [('Debug Sample Count.X',)],
   }
 
   present_features = {}

@@ -55,7 +55,7 @@ def parse_args(cmd=None, description=None):
 
   if cmd in {'preprocess', 'train', 'find_lr', 'import'}:
     parser.add_argument('features', type=str, nargs='*',
-                        choices=['hdr', 'ldr', 'sh1', 'albedo', 'alb', 'normal', 'nrm', []],
+                        choices=['hdr', 'ldr', 'sh1', 'albedo', 'alb', 'normal', 'nrm', 'var', 'spp', []],
                         help='set of input features')
     parser.add_argument('--clean_aux', action='store_true',
                         help='train with noise-free (reference) auxiliary features')

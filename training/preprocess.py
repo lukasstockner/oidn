@@ -32,9 +32,32 @@ def main():
   else:
     input_features  = cfg.features
     target_features = [main_feature]
+    if 'var' in cfg.features:
+      target_features = ['hdr', 'nrm', 'alb', 'var']
+
+  prefilter = prepare_image_prefilter(device, UNetDenoiser, 'prefilter.tza')
 
   # Returns a preprocessed image (also changes the original image!)
-  def preprocess_image(image, exposure):
+  def preprocess_image(image, exposure, is_target, spp):
+    channels = get_dataset_channels(cfg.features)
+
+    if 'var' in cfg.features:
+      c = channels.index('var.r')
+      # NOTE: If this normalization is changed, we need to scale by exposure^2!
+      variance = image[..., c:c+3]
+      hdr = image[..., 0:num_main_channels]
+      relstddev = np.sqrt(variance) / np.maximum(hdr, 1e-3)
+      image[..., c:c+3] = relstddev
+      if is_target:
+        tensor = image_to_tensor(image, batch=True).to(device)
+        input = torch.cat((tensor[:, 0:3, ...], tensor[:, 6:12, ...]), dim=1)
+        filtered = prefilter(input, tensor[:, 3:6, ...])
+        tensor = concat(tensor[:, 0:3, ...], filtered)
+        image = tensor_to_image(tensor)
+    if 'spp' in cfg.features and not is_target:
+      c = channels.index('spp.x')
+      image[..., c] = np.log2(np.maximum(image[..., c] * spp, 1))
+
     image[..., 0:num_main_channels] *= exposure
 
     # Convert to FP16
@@ -79,7 +102,7 @@ def main():
 
     # Preprocess the target image
     for scale in scales:
-      target_image = preprocess_image(scale_image(target_pixels, scale), exposure)
+      target_image = preprocess_image(scale_image(target_pixels, scale), exposure, True, 0)
 
       # Save the target image
       target_identifier = name_to_identifier(target_name, scale)
@@ -95,9 +118,18 @@ def main():
       if input_pixels.shape[0:2] != target_pixels.shape[0:2]:
         error('the input and target images have different sizes')
 
+      # Preprocess the image
+      spp = input_name.split('_')[-1]
+      if spp[0] == 'r':
+        spp = 10*int(spp[1:])  # Input images with e.g. _r000002 in the name have an average of 2spp, but their spp channel must be multipled by 20.
+      elif spp[0] == 'a':
+        spp = 16384
+      else:
+        spp = int(spp)
+
       out = dict()
       for scale in scales:
-        out[scale] = preprocess_image(scale_image(input_pixels, scale), exposure)
+        out[scale] = preprocess_image(scale_image(input_pixels, scale), exposure, False, spp * scale*scale)
       return out
      process_queues[input_name] = run_in_mproc(process, processes)
 

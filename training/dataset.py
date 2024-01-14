@@ -26,6 +26,8 @@ def get_channels(features, target):
     channels += ['hdr.r', 'hdr.g', 'hdr.b']
   if 'ldr' in features:
     channels += ['ldr.r', 'ldr.g', 'ldr.b']
+  if 'var' in features:
+    channels += ['var.r', 'var.g', 'var.b']
   if 'sh1' in features:
     if target == 'model':
       channels += ['sh1.r', 'sh1.g', 'sh1.b']
@@ -35,6 +37,8 @@ def get_channels(features, target):
     channels += ['alb.r', 'alb.g', 'alb.b']
   if 'nrm' in features:
     channels += ['nrm.x', 'nrm.y', 'nrm.z']
+  if 'spp' in features:
+    channels += ['spp.x']
   return channels
 
 def get_dataset_channels(features):
@@ -87,6 +91,42 @@ def get_image_feature(filename):
     else:
       return 'srgb' # assume sRGB
 
+def prepare_image_prefilter(device, modelType, prefilter):
+  input_file = tza.Reader(prefilter)
+  ms = {key: torch.from_numpy(np.array(input_file[key][0])) for key in input_file._table}
+  ms = filter_model_state(ms)
+
+  transfer = PUTransferFunction()
+  transferIn = lambda c: transfer.forward(torch.clamp(c, min=0.))
+  model = modelType(transferIn, 9, 3).to(device)
+  model.load_state_dict(ms)
+
+  def prefilter(input, data):
+    shape = input.shape
+    pad = lambda i: torch.nn.functional.pad(i, (0, round_up(shape[3], model.alignment) - shape[3],
+                              0, round_up(shape[2], model.alignment) - shape[2]))
+    unpad = lambda i: i[:, :, :shape[2], :shape[3]]
+
+    with torch.no_grad():
+      assert data.shape[1] == 3
+      assert input.shape[1] >= 9
+      exposure = autoexposure(tensor_to_image(data))
+
+      # Prefilter model expects [hdr, alb, nrm].
+      # Use `data` as hdr, copy alb and nrm.
+      input = pad(torch.cat((data, input[:, 3:9, ...]), dim=1))
+
+      # Tonemap data
+      input[:, 0:3, ...] *= exposure
+
+      # Apply model
+      output = model(input)
+
+      # Undo tonemapping
+      return unpad(transfer.inverse(torch.clamp(output, min=0., max=1.))).float() / exposure
+
+  return prefilter
+
 # Loads image features in EXR format with given filename prefix
 def load_image_features(name, features):
   img_features = image_get_features(name + '.exr')
@@ -103,6 +143,12 @@ def load_image_features(name, features):
   if 'ldr' in features:
     ldr = np.clip(data['ldr'], 0., 1.)
     images.append(ldr)
+
+  # Variance
+  if 'var' in features:
+    variance = np.maximum(data['var'], 0.)
+    variance[np.isnan(variance)] = 0.0
+    images.append(variance)
 
   # SH L1 color coefficients
   if 'sh1' in features:
@@ -128,6 +174,10 @@ def load_image_features(name, features):
     normal = normal * 0.5 + 0.5
 
     images.append(normal)
+
+  # Sample Map
+  if 'spp' in features:
+    images.append(data['spp'])
 
   # Concatenate all feature images into one image
   return np.concatenate(images, axis=2)
@@ -167,21 +217,24 @@ def get_image_sample_groups(dir, input_features, target_features=None):
     image_name = os.path.relpath(filename, dir)  # remove dir path
     image_name, _ = image_name.rsplit('.', 1) # remove extensions
     group = image_name
+    spp = 1
     if '_' in image_name:
       prefix, suffix = image_name.rsplit('_', 1)
       suffix = suffix.lower()
       if (suffix.isdecimal() or
+          (suffix[0] in 'ra' and suffix[1:].isdecimal()) or
           (suffix.endswith('spp') and suffix[:-3].isdecimal()) or
           suffix == 'ref' or suffix == 'reference' or
           suffix == 'gt' or suffix == 'target'):
         group = prefix
-    image_groups[group].add(image_name)
+        spp = int(suffix[1:] if suffix[0] in 'ra' else suffix)
+    image_groups[group].add((spp, image_name))
 
   # Make sorted image sample (inputs + target) groups
   image_sample_groups = []
   for group in sorted(image_groups):
     # Get the list of inputs and the target
-    image_names = sorted(image_groups[group])
+    image_names = [v[1] for v in sorted(image_groups[group])]
     if len(image_names) > 1:
       input_names, target_name = image_names[:-1], image_names[-1]
     else:
@@ -285,6 +338,8 @@ class PreprocessedDataset(Dataset):
     self.all_channels = get_dataset_channels(data_cfg.features)
     self.target_channels = get_dataset_channels(self.target_features)
     self.all_target_channels = ['hdr.r', 'hdr.g', 'hdr.b']
+    if 'var' in data_cfg.features:
+      self.all_target_channels += ['var.r', 'var.g', 'var.b']
     self.num_main_channels = len(get_model_channels(self.main_feature))
 
     # Get the image samples
@@ -341,7 +396,7 @@ class TrainingDataset(PreprocessedDataset):
     target_channels = self.target_channels[:] # copy
 
     # Randomly permute the color channels
-    color_features = list(set(self.features) & {'hdr', 'ldr', 'alb'})
+    color_features = list(set(self.features) & {'hdr', 'var', 'ldr', 'alb'})
     if color_features:
       color_order = randperm(3)
       for f in color_features:
